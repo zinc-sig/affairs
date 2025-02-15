@@ -45,10 +45,12 @@ As a reviewer, this section should be checked to see if the proposed changes fee
 Will this RFD have implications for the web UI? If so, be sure to collaborate with a frontend engineer and/or product designer. They can add UI design assets (user flows, wireframes, mockups or prototypes) to this document, and if changes are substantial, they may wish to create a separate RFD to dive further into details on the UI changes.
 
 ## Style Notes
-All RFDs should follow similar styling and structure to ease reading. "Beautiful is better" is a core principle of HashiCorp and we care about the details.
+All RFDs should follow similar styling and structure to ease reading.
 
 ### Heading Styles
-"Heading 2" should be used for section titles. We do not use "Heading 1" because aesthetically the text is too large.
+"Heading 1" is reserved for the title of the RFD.
+
+"Heading 2" should be used for section titles.
 
 "Heading 3" should be used for sub-sections.
 
@@ -62,7 +64,7 @@ When making lists, it is common to bold the first phrase/sentence/word to bring 
 - **Backwards compatibility** should be considered.
 
 #### Code Samples
-Code samples should be indented (tab or spaces are fine as long as it is consistent) text using the Courier New font. Syntax highlighting can be included if possible but isn't necessary. Please ensure the highlighted syntax is the proper font size and using the font Courier New so non-highlighted samples don't appear out of place.
+Code samples should be indented (tab or spaces are fine as long as it is consistent) text using single- or triple-backticks for code-block formatting. Syntax highlighting can be included if possible but isn't necessary.
 
 CLI output samples are similar to code samples but should be highlighted with the color they'll output if it is known so that the RFD could also cover formatting as part of the user experience.
 ```
