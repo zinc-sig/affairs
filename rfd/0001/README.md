@@ -1,7 +1,7 @@
 ---
 authors: David Mak, Kristopher Lam
-state: prediscussion
-discussion:
+state: discussion
+discussion: #2
 labels: process
 ---
 
@@ -73,11 +73,11 @@ $ git checkout -b rfd/0042
 
 #### 3.1.2 Create a placeholder RFD
 
-Create a placeholder PFD by creating a directory corresponding to your RFD in the `rfd` directory, and copying the RFD template.
+Create a placeholder RFD by creating a directory corresponding to your RFD in the `rfd` directory, and copying the RFD template.
 
 ```
 $ mkdir -p rfd/0042
-$ cp 
+$ cp rfd/templates/prototype.md rfd/0042/README.md
 ```
 
 Fill in the RFD metadata and add your name as an author. The status of the RFD should be `ideation` or `prediscussion`, depending on your ability to continue working on the RFD at this point.
@@ -94,7 +94,9 @@ $ git push -u origin rfd/0042
 
 #### 3.1.4 Iterate on your RFD in your branch
 
-Start working on the RFD! There are no hard requirements to squash your commits - do this at your own discretion.
+Start working on the RFD! A template is available in [`rfd/templates`](../rfd/templates).
+
+There are no hard requirements to squash your commits - do this at your own discretion.
 
 ### 3.2 Discuss your RFD
 
@@ -150,3 +152,8 @@ We adopt the following canonical labels to categorize the scope of various RFDs.
 - `debug`: debugging
 - `interop`: interoperability with external systems
 - `ux`: related to interface design in general
+
+## A. Acknowledgements
+
+The [RFD template](../templates/prototype.md) is adapted from [HashiCorp's RFC Template](https://www.hashicorp.com/en/how-hashicorp-works/articles/rfc-template).
+
