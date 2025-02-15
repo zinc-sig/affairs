@@ -32,4 +32,3 @@ The idea of formalizing the process of technical discussion and its archival is 
 ## License
 
 This repository is licensed under the MIT License. See the [LICENSE](LICENSE) file for more information.
-```
