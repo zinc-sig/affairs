@@ -47,6 +47,10 @@ Temporary Items
 # iCloud generated files
 *.icloud
 
+### Obsidian ###
+# config dir
+.obsidian/
+
 ### Windows ###
 # Windows thumbnail cache files
 Thumbs.db
@@ -72,3 +76,4 @@ $RECYCLE.BIN/
 
 # Windows shortcuts
 *.lnk
+
