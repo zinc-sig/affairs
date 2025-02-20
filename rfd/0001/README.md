@@ -1,6 +1,6 @@
 ---
 authors: David Mak, Kristopher Lam
-state: discussion
+state: committed
 discussion: #2
 labels: process
 ---
