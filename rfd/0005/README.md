@@ -7,13 +7,16 @@ labels: process, ux
 
 # Frontend Quality Assurance Statement (QAS)
 
-### Stakeholders
+## Background
+This document lays down the quality assurance statement for the frontend of the system. Further revision and amendment will be introduced in later RFDs as the frontend evolves. It serves as a reference for functional requirements and user experience during development.
+
+## Stakeholders
 Here we describe the roles that users of this system is likely to be apart in but not exclusive to
 - Student
-- Instructor
 - Teaching Associates
+- System Administrator
 
-### Functionalities guarantees
+## Functionalities guarantees
 
 - Configure grading pipeline workflow
 > This describes the ability to configure the grading pipeline workflow, including stages of task to run, the options and test cases to specify in each stage and its dependencies and the sequence of execution.
