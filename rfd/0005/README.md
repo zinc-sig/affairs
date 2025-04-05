@@ -15,6 +15,12 @@ Here we describe the roles that users of this system is likely to be apart in bu
 
 ### Functionalities guarantees
 
+- Configure grading pipeline workflow
+> This describes the ability to configure the grading pipeline workflow, including stages of task to run, the options and test cases to specify in each stage and its dependencies and the sequence of execution.
+
+- Assign assessment
+> This describes the ability to assign assessment to students, including the ability to specify the assessment details, such as the assessment name, the assessment type, various due date and deadline, and grading policy associated with the assessment.
+
 - Means to submission of work
 > This describes the ways to transfer the source code files from users' end to the system. The web application is the current primary interface for uploading work to be recognized as a submission. However it is favorable to introduce another tier of interface such as CLI as a fallback in case of availability issue. 
 
@@ -29,3 +35,7 @@ Here we describe the roles that users of this system is likely to be apart in bu
 
 - Basic grading spreadsheet export
 > This describes the ability to export a basic spreadsheet of grading result for the purpose of academic reporting logistics.
+
+- Role and permission management
+> This describes the ability to manage user accounts' role, including the ability to authorize and revoke access to certain resouces through the use of a web interface.
+
