@@ -11,11 +11,11 @@ The aim of this document is to establish the expected architecture for the contr
 
 ## Background
 
-TODO: Copy from RFD 0003
+See Background from [RFD 0003](../0003/README.md).
 
 ## Proposal
 
-TODO: Copy from RFD 0003
+See Proposal from [RFD 0003](../0003/README.md).
 
 **This RFD will focus on describing the architecture for the Grader Control Plane. The high-level description of the architecture for the Grader Worker is described in RFD 0003.**
 
