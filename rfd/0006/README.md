@@ -65,20 +65,95 @@ Some functionality, e.g. JPlag plagiarism checking, cannot be specified in the g
 
 This proposal will be separated into three sections: One describing the format specification for stage templates, one describing the format specifications for the grading configuration, and one describing an intermediate representation used internally by the Grader.
 
+Unless otherwise specified, all configurations below are defined using [HashiCorp Configuration Language (HCL)](https://github.com/hashicorp/hcl).
+
 ## Stage Template
 
-A stage template is a partial definition of a stage. It is analogous to the `PipelineStage`s defined in Grader 1.0. All stage templates (except for the generic template) must be derived from the generic template.
+A stage template is a partial definition of a stage. It is analogous to the `PipelineStage`s defined in Grader 1.0.
 
-#### Generic Stage Template Definition
+### Stage Template Configuration
 
-The "generic stage definition" is a template for all other stage definitions. The purpose of this stage is to provide a generic way to define any grading stage that may be executed by the Grader.
+A template shall be defined in `env.hcl` at the top-level of a public Git repository. A template is defined by a `template` block, followed by a block label with the link of the Git repository housing this file.
 
-The generic stage definition shall contain the following keys:
+```terraform
+// github.com/zinc-sig/contrib/gcc-compile:/env.hcl
+template "github.com/zinc-sig/contrib/gcc-compile" {
+	// ...
+}
+```
 
-- `setup`: An optional block of Golang code that will be executed during the creation of the image template.
-- `exec`: A block of Golang code whose result will be used as the grading result of this stage.
+The `template` block should contain a `setup` attribute, which specifies zero or more commands that will be executed during the generation of the image template.
 
-### Grading Configuration
+```terraform
+template "github.com/zinc-sig/contrib/gcc-compile" {
+	setup = <<EOT
+		nix install gcc
+	EOT
+}
+```
+
+The above `setup` attribute may generate the following equivalent `Dockerfile`:
+
+```Dockerfile
+FROM nixos/nix:latest
+RUN nix-channel --update
+RUN nix install gcc
+```
+
+The `template` block may contain an `unstable` attribute, which specifies whether to use NixOS's unstable branch.
+
+```terraform
+template "github.com/zinc-sig/contrib/gcc-compile" {
+	unstable = true
+}
+```
+
+The above `unstable` attribute may generate the following equivalent `Dockerfile`:
+
+```Dockerfile
+FROM nixos/nix:latest
+RUN nix-channel --add https://nixos.org/channels/unstable nixos
+RUN nix-channel --update
+```
+
+The `template` block may contain an `image` attribute, which specifies the hash of the built image that was constructed as specified by other attributes of this block. This attribute shall be used for internal caching use by the orchestrator, and shall not be used by the end-user.
+
+### Stage Template Evaluation Implementation
+
+The Git repository may also contain an *evaluation implementation*. An evaluation implementation specifies the evaluation logic when the Grader is executing a stage template with a student submission as its input.
+
+The evaluation implementation shall consist of one or more Go files, effectively acting as a single Go package. The Go package shall contain exactly one implementation of the following Go function, and zero or more helper implementations.
+
+```go
+func Grade(opts: map[string]interface, context; ctx.Context, scenarios: *Scenarios) *Result, Error {
+	// ...
+}
+```
+
+The `Grade` function shall accept the following arguments:
+
+- `opts`: Options that modify the execution behavior of this stage.
+- `context`: Context associated with the entire pipeline, including previous stage results, helper file information, etc.
+- `scenario`: Abstract rules that can be applied to the execution output to map and/or modify the stage output(s)
+
+```go
+import "os"
+
+func Grade(opts: map[string]interface, context; ctx.Context, scenarios: *Scenarios) *Result, Error {
+	// runtime check keys
+
+	for _, s := range scenarios {
+		stdout, stderr := os.Exec(...)
+		// rvars = Reserved Variables used in scenario def
+		used_rvars := /* Unmarhsal scenarios and read reserved keywords, repack data structures */
+		s.Evaluate(used_rvars)
+	}
+
+	// Result = {STDIN, STDOUT, STDERR, convertToInternalRepr(...)}
+}
+```
+
+## Grading Configuration
 
 The grading configuration will be defined by an HashiCorp Configuration Language (HCL) file. 
 
@@ -86,7 +161,7 @@ The grading configuration will be defined by an HashiCorp Configuration Language
 
 #### `use` Block
 
-Stage definitions must 
+Stage definitions must
 
 #### `option` Block
 
@@ -240,13 +315,12 @@ pipeline "pa1" {
 					expected = EOT<<
 						2 3 4
 					EOT
-					condition = STDOUT == EXPECTED && LEAK == nil
+					condition = STDOUT == EXPECTED
 					score = 100
 				}
 				match "stdout-is-same" {
 					condition = STDOUT == EXPECTED
 					score = 100
-					visibility = "ALWAYS_HIDDEN"
 					export = true
 				}
 			}
