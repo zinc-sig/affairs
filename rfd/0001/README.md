@@ -31,6 +31,14 @@ Due to the nature of RFDs, RFDs should be evaluated by different sets of insight
 - List out the prerequisites (if any), the steps towards implementing the idea, and any post-implementation verification
 	- Give a timeline for the expected progress and/or completion of the idea
 
+### 1.2 Attention to Pay at when writing about concrete implementation
+
+Unless there are no other viable existing alternatives, refrain from starting a RFD with a specific solution or using a particular framework. Instead, focus on providing a high-level overview of the problem and potential solutions.
+
+Optimally we would like to be as objective as possible when discussing potential solutions. We should avoid making assumptions about the implementation details or the specific technologies that will be used. We should also consider the trade-offs between different approaches and weigh the pros and cons of each option.
+
+Experimentation is encouraged to provide evidence based review on the feasibility and effectiveness of the proposed solution(s).
+
 ## 2. RFD Metadata and State
 
 We adopt the usage of metadata and state in RFDs as per [*OCC rfd1* §2](https://rfd.shared.oxide.computer/rfd/0001#_rfd_metadata_and_state). The details are summarized as follows.
@@ -121,7 +129,7 @@ The final authority over whose comments to accept lie solely with the maintainer
 
 After the Pull Request of the RFD is opened for one week, the RFD can be merged into `main` and its state changed from `discussion` to `published`. Try to ensure that the RFD is at least read by one other person.
 
-Discussions can continued on `published` RFDs by using the `discussion` link in the RFD metadata. 
+Discussions can continued on `published` RFDs by using the `discussion` link in the RFD metadata.
 
 #### 3.2.5 Making changes to an RFD
 
@@ -156,4 +164,3 @@ We adopt the following canonical labels to categorize the scope of various RFDs.
 ## A. Acknowledgements
 
 The [RFD template](../templates/prototype.md) is adapted from [HashiCorp's RFC Template](https://www.hashicorp.com/en/how-hashicorp-works/articles/rfc-template).
-
