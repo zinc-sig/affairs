@@ -33,10 +33,12 @@ The proposed extension system for ZINC consists of the following key components:
 2. **Extensions**: Independent modules encapsulating specific functionalities, including:
    - **Grader**: Handles grading of programming assignments.
    - **Submission-Collector**: Manages the collection of student submissions.
-   - **Examination**: Controls and manages computer-based examinations.
+   - **Proctoring**: Provides examination-specific features like webcam capture, screen recording, and lockdown browser integration for cheat prevention.
    - **Potential Additional Extensions**:
      - **Scoring**: Calculates scores based on multiple components, such as test cases or partial credit.
      - **Attendance**: Tracks student attendance for course events.
+     - **Plagiarism Detection**: Analyzes submissions for code similarity and potential academic integrity violations.
+     - **Analytics**: Generates reports and insights on student performance and course metrics.
 3. **Event-Driven Communication**: Extensions and the core communicate via events through a message broker, ensuring loose coupling and enabling asynchronous operations.
 4. **Message Broker**: A system like NATS, which supports event-based, topic-based subscriptions with at-least-once delivery, will facilitate communication [NATS Documentation](https://nats.io/).
 
@@ -111,6 +113,41 @@ The event system is the backbone of communication, using a message broker that s
 
 Configurations are managed centrally by the core, allowing extensions to request settings during registration or runtime. This centralization supports dynamic updates, enabling extensions to adapt to changes without restarting. For example, the `grader` extension might request Temporal workflow configurations, while the `submission-collector` might need storage settings.
 
+### Extension Scope Definition
+
+To maintain clarity and prevent architectural confusion, it's crucial to define what should and should not be an extension:
+
+#### What Should Be an Extension
+
+Extensions should encapsulate:
+
+1. **Specialized Processing Logic**: Components that perform specific, complex operations on data (e.g., grading algorithms, plagiarism detection).
+2. **External Integrations**: Modules that interface with third-party services or hardware (e.g., proctoring systems, learning management systems).
+3. **Optional Features**: Functionality that not all deployments require (e.g., attendance tracking, advanced analytics).
+4. **Resource-Intensive Operations**: Components that may need independent scaling (e.g., video processing for proctoring, large-scale code compilation).
+5. **Domain-Specific Enhancements**: Features specific to certain disciplines or use cases (e.g., GPU-based testing for ML courses, circuit simulation for electrical engineering).
+
+#### What Should NOT Be an Extension
+
+Core system functionality should remain in the main application:
+
+1. **Basic Data Models**: Fundamental entities like students, courses, activities (assignments, examinations) should be core concepts.
+2. **Activity Types**: Examinations, assignments, and quizzes are activities within the system, not extensions. They represent different configurations of the same underlying concept - a deadline-bound student submission.
+3. **Authentication and Authorization**: Security infrastructure must be centralized and consistent.
+4. **Data Persistence**: Core database operations and transaction management.
+5. **User Interface**: The primary web interface and API endpoints for basic operations.
+
+#### Example: Examination vs. Proctoring
+
+Examinations are fundamentally assignments with specific constraints (time limits, controlled access). Therefore, "examination" is an activity type in the core system, not an extension. However, examination-specific features like:
+
+- Webcam monitoring and recording
+- Screen capture and lockdown browser integration
+- Live proctoring dashboards
+- Cheat detection algorithms
+
+These constitute a "Proctoring" extension, as they add specialized functionality beyond basic activity management.
+
 ### Event Hierarchy
 
 Events are categorized by scope to facilitate organization and filtering:
@@ -120,7 +157,9 @@ Events are categorized by scope to facilitate organization and filtering:
 
 This hierarchy ensures that extensions can subscribe to relevant events efficiently, reducing unnecessary processing.
 
-### Example Event Flow
+### Example Event Flows
+
+#### Standard Assignment Grading
 
 | Step | Component            | Action                      | Event Published       |
 | ---- | -------------------- | --------------------------- | --------------------- |
@@ -129,13 +168,24 @@ This hierarchy ensures that extensions can subscribe to relevant events efficien
 | 3    | Grader               | Completes grading           | `grading.completed`   |
 | 4    | Core                 | Updates student record      | -                     |
 
-This table illustrates the decoupled nature of the system, where each component reacts to events without direct interaction.
+#### Proctored Examination
+
+| Step | Component            | Action                           | Event Published            |
+| ---- | -------------------- | -------------------------------- | -------------------------- |
+| 1    | Core                 | Student starts examination       | `activity.started`         |
+| 2    | Proctoring           | Begins webcam/screen recording   | `proctoring.started`       |
+| 3    | Submission-Collector | Receives exam submission         | `submission.received`      |
+| 4    | Proctoring           | Stops recording, analyzes data   | `proctoring.completed`     |
+| 5    | Grader               | Grades exam responses            | `grading.completed`        |
+| 6    | Core                 | Updates student record           | -                          |
+
+These tables illustrate the decoupled nature of the system, where each component reacts to events without direct interaction.
 
 ## Discussion
 
 Several aspects of the proposed design require further exploration:
 
-1. **Component Scope Definition**: Clearly defining the responsibilities of the core and each extension to prevent overlap and ensure all functionalities are covered. For example, should the `scoring` extension handle all score calculations, or should some logic reside in the core?
+1. **Component Boundaries**: With the clarification that examinations are activities rather than extensions, further discussion is needed on other boundary cases. For example, should the `scoring` extension handle all score calculations, or should basic aggregation remain in the core?
 2. **Configuration Negotiation**: Developing a mechanism for dynamic configuration updates and dependency injection. How should extensions handle changes to configurations, such as updated message broker settings?
 3. **Event Hierarchy and Naming**: Establishing standardized naming conventions and event structures to simplify subscription and management. Should events follow a specific format, such as `namespace.action`?
 4. **Error Handling and Reliability**: Ensuring the event system handles failures gracefully, with mechanisms for retries, error reporting, and recovery. How should the system handle a failed grading process?
