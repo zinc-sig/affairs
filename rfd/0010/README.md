@@ -112,6 +112,7 @@ graph TB
         SubWorker[Submission Worker]
         SubWF[Submission Workflows]
         SubAct[Submission Activities]
+        SubSvc[Submission Service]
     end
 
     subgraph "Pipeline Extension"
@@ -124,6 +125,10 @@ graph TB
 
     subgraph "Message Broker"
         NATS[NATS Server]
+    end
+
+    subgraph "Storage"
+        ObjectStore[(Object Storage)]
     end
 
     Core --> ExtConfig
@@ -139,8 +144,11 @@ graph TB
     PipeWF --> PipeWorker
     BatchWF --> PipeWorker
 
+    PipeAct -->|Request deliveries| NATS
+    NATS -->|Forward request| SubSvc
+    PipeAct -->|Pull submission| ObjectStore
+    PipeAct -->|Store results| ObjectStore
     SubAct --> NATS
-    PipeAct --> NATS
     NATS --> Core
 ```
 
@@ -155,34 +163,39 @@ Extensions interact with Temporal through a well-defined pattern:
 
 ### Cross-Extension Communication
 
-Communication between extensions follows the established NATS pattern within activities:
+Communication between extensions follows the established NATS pattern within activities. The pipeline extension coordinates batch grading through two distinct activities:
 
 ```mermaid
 sequenceDiagram
     participant User as User/API
     participant PE as Pipeline Extension
     participant BW as Batch Grading Workflow
-    participant PA as Pipeline Activity
+    participant GDA as GetDeliveries Activity
+    participant PEA as Pipeline Execution Activity
     participant NATS as NATS Broker
     participant SE as Submission Extension
-    participant SW as Submission Workflow
+    participant OS as Object Storage
 
     User->>PE: Request batch grading
-    PE->>BW: StartWorkflow(batch)
-    loop For each submission batch
-        BW->>PA: ProcessBatch()
-        PA->>NATS: Publish("submission.fetch")
-        NATS->>SE: Deliver event
-        SE->>SW: Process submissions
-        SW-->>SE: Submissions ready
-        SE->>NATS: Publish("submission.ready")
-        NATS-->>PA: Receive submissions
-        PA->>PA: Execute grading pipeline
-        PA->>NATS: Publish("grading.completed")
-        PA-->>BW: Batch grading complete
+    PE->>BW: StartWorkflow(collection_id, config_id)
+    BW->>GDA: GetCollectionLatestDeliveries()
+    GDA->>NATS: Request("submission.deliveries.list")
+    NATS->>SE: Forward request
+    SE->>SE: Query latest deliveries by user
+    SE->>NATS: Return delivery list
+    NATS->>GDA: Delivery list with IDs
+    GDA-->>BW: List of delivery IDs
+
+    loop For each delivery
+        BW->>PEA: ExecutePipeline(delivery_id)
+        PEA->>OS: Pull submission data
+        OS-->>PEA: Submission content
+        PEA->>PEA: Execute grading pipeline
+        PEA->>OS: Store grading results
+        PEA-->>BW: Pipeline execution complete
     end
-    BW-->>PE: All batches complete
-    PE-->>User: Results
+    BW-->>PE: All deliveries graded
+    PE-->>User: Batch results
 ```
 
 ## Configuration Management
@@ -239,14 +252,16 @@ Batch workflows handle large-scale operations with controlled concurrency:
 
 ```
 BatchGradingWorkflow
-├── Validate batch parameters
+├── Validate batch parameters (collection_id, config_id)
+├── Fetch latest deliveries via NATS request
 ├── Prepare batch metadata
-├── For each submission group (parallel with limits)
-│   ├── Execute grading activity
+├── For each delivery (parallel with limits)
+│   ├── Pull submission from object storage
+│   ├── Execute grading pipeline
 │   ├── Handle failures with retry
-│   └── Collect results
+│   └── Store results to object storage
 ├── Aggregate results
-└── Generate reports
+└── Generate batch summary
 ```
 
 Key considerations:
@@ -257,17 +272,31 @@ Key considerations:
 
 ### Activity Design Pattern
 
-Activities encapsulate non-deterministic operations and external interactions:
+Activities encapsulate non-deterministic operations and external interactions. For batch grading, two primary activities handle different responsibilities:
 
+#### GetCollectionLatestDeliveriesActivity
 ```
-GradingActivity
-├── Validate input
-├── Check authorization
-├── Retrieve submission from storage
-├── Trigger pipeline via NATS
-├── Wait for completion event
-├── Store results
-└── Return grading outcome
+GetCollectionLatestDeliveriesActivity
+├── Validate collection ID and config ID
+├── Create NATS request payload
+├── Send request to submission extension via NATS
+├── Wait for response with timeout
+├── Parse delivery list from response
+├── Filter for committed status deliveries only
+└── Return list of delivery IDs
+```
+
+#### PipelineExecutionActivity
+```
+PipelineExecutionActivity
+├── Validate delivery ID
+├── Pull submission content from object storage
+├── Prepare pipeline execution context
+├── Execute grading pipeline
+├── Collect execution results
+├── Store results in object storage
+├── Update pipeline run records
+└── Return execution status
 ```
 
 Activities receive dependencies through FX injection, maintaining clean separation from workflows.
@@ -392,7 +421,7 @@ The integration follows a phased migration strategy:
 
 **Phase 2: Batch Grading**
 - Implement batch grading workflows in pipeline extension
-- Migrate existing batch operations to pipeline extension
+- Migrate existing batch operations
 - Validate performance and reliability
 
 **Phase 3: Extension Integration**
