@@ -227,13 +227,12 @@ The system employs a simple, extensible configuration approach:
 ```yaml
 temporal:
   host_port: temporal.example.com:7233  # Combined host:port format
-  namespace: zinc-dev                    # Environment-specific
-  task_queue_prefix: zinc                # Prefix for all task queues
+  namespace: zinc-dev                    # Environment-specific isolation
 ```
 
 ### Extension Configuration Distribution
 
-The extension service provides Temporal configuration through the existing configuration mechanism. Extensions receive the task queue prefix and compute their specific queues:
+The extension service provides Temporal configuration through the existing configuration mechanism:
 
 ```protobuf
 message Configuration {
@@ -245,8 +244,7 @@ message Configuration {
 // name: "temporal"
 // properties: {
 //   "host_port": "temporal.example.com:7233",
-//   "namespace": "zinc-dev",
-//   "task_queue_prefix": "zinc"  # Prefix only, not computed queue
+//   "namespace": "zinc-dev"
 // }
 ```
 
@@ -257,16 +255,13 @@ Namespaces are environment-based to provide clean separation:
 - `zinc-staging` for staging
 - `zinc-prod` for production
 
-Task queues follow a three-part naming pattern: `{prefix}-{component}-{queue_type}`:
-- Core services: `zinc-core-default` (for core workflows)
-- Submission extension: `zinc-submission-default` (for submission activities)
-- Pipeline extension: `zinc-pipeline-default` (for pipeline activities)
-
 ## Task Queue Management
 
-The system uses a consistent three-part naming pattern for task queues: `{prefix}-{component}-{queue_type}`. Each extension defines its task queue suffix as a constant (e.g., `pipeline-default`) and the Temporal client combines it with the environment-specific prefix (e.g., `zinc`) to create the full queue name (e.g., `zinc-pipeline-default`).
+The system uses simple, unprefixed task queue names following a two-part pattern: `{component}-{queue_type}` (e.g., `pipeline-default`, `submission-default`).
 
-Extensions provide their computed task queue as a named FX dependency that the worker consumes, ensuring each extension's activities run on the correct task queue. This approach provides type safety through constants while maintaining flexibility across environments.
+**Why no environment prefixes?** Temporal namespaces provide complete isolation. A `pipeline-default` queue in the `zinc-dev` namespace is entirely separate from `pipeline-default` in `zinc-prod`, eliminating the need for prefixes like "zinc-" that would create redundancy.
+
+**Implementation:** Each extension defines its task queue as a constant and provides it as a named FX dependency using `fx.Supply`, which the worker consumes. This ensures activities run on the correct task queue while maintaining clean separation across environments.
 
 ## Workflow Patterns
 
@@ -277,10 +272,10 @@ Batch workflows orchestrate activities across different task queues:
 ```
 BatchGradingWorkflow (runs on initiating task queue)
 ├── Validate batch parameters (collection_id, config_id)
-├── Execute GetCollectionLatestDeliveries (on zinc-submission queue)
+├── Execute GetCollectionLatestDeliveries (on submission-default queue)
 ├── Prepare batch metadata
 ├── For each delivery (parallel with limits)
-│   └── Execute ExecutePipeline (on zinc-pipeline queue)
+│   └── Execute ExecutePipeline (on pipeline-default queue)
 │       ├── Pull submission from object storage
 │       ├── Execute grading pipeline
 │       ├── Handle failures with retry
@@ -291,16 +286,22 @@ BatchGradingWorkflow (runs on initiating task queue)
 
 Workflows specify the target task queue when calling activities across extensions:
 ```go
+// Import the extensions to access their constants
+import (
+    "github.com/zinc-sig/core/internal/api/submission"
+    "github.com/zinc-sig/core/internal/api/pipeline"
+)
+
 // Call submission extension activity
 ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-    TaskQueue: "zinc-submission-default",
+    TaskQueue: submission.DefaultTaskQueue,
     StartToCloseTimeout: 30 * time.Second,
 })
 workflow.ExecuteActivity(ctx, "GetCollectionLatestDeliveries", collectionID)
 
 // Call pipeline extension activity
 ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-    TaskQueue: "zinc-pipeline-default",
+    TaskQueue: pipeline.DefaultTaskQueue,
     StartToCloseTimeout: 5 * time.Minute,
 })
 workflow.ExecuteActivity(ctx, "ExecutePipeline", deliveryID)
@@ -337,10 +338,10 @@ var Module = fx.Module(
     fx.Provide(
         // ... existing providers
         temporal.AsActivity(NewExecutionActivity),  // Register activity
-        fx.Annotate(                                // Provide task queue
-            func(client *temporal.Client) string {
-                return client.FormatTaskQueue(DefaultTaskQueue)
-            },
+    ),
+    fx.Supply(
+        fx.Annotate(
+            DefaultTaskQueue,  // "pipeline-default"
             fx.ResultTags(`name:"temporalTaskQueue"`),
         ),
     ),
