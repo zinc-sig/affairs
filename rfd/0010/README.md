@@ -82,23 +82,23 @@ zinc-core/
 ├── workflow/                  # Top-level orchestration logic
 │   ├── grading/
 │   │   └── batch_grading.go  # Batch grading workflow
-│   └── module.go              # FX module for workflow registration
+│   └── workflow.go            # FX module for workflow registration
 │
 ├── internal/temporal/         # Shared Temporal infrastructure
 │   ├── client.go              # Client wrapper with connection management
 │   ├── worker.go              # Worker with FX activity/config injection
 │   ├── types.go               # AsActivity/AsWorkflow helper functions
-│   └── module.go              # FX modules for Temporal setup
+│   └── temporal.go            # FX modules for Temporal setup
 │
 ├── internal/api/submission/   # Submission extension
 │   ├── activities/
 │   │   └── delivery.go        # GetCollectionLatestDeliveries activity
-│   └── module.go              # FX registration with AsActivity
+│   └── submission.go          # FX registration with AsActivity
 │
 ├── internal/api/pipeline/     # Pipeline extension
 │   ├── activities/
 │   │   └── execution.go       # ExecutePipeline activity
-│   └── module.go              # FX registration with AsActivity
+│   └── pipeline.go            # FX registration with AsActivity
 │
 └── internal/extension/        # Extension configuration service
     └── service.go             # Enhanced with Temporal config and task queues
@@ -331,7 +331,7 @@ func (a *DeliveryActivity) GetCollectionLatestDeliveries(
     return a.service.GetLatestDeliveriesByUser(ctx, collectionID)
 }
 
-// Registration in module.go
+// Registration in submission.go
 fx.Provide(temporal.AsActivity(NewDeliveryActivity))
 ```
 
@@ -356,7 +356,7 @@ func (a *ExecutionActivity) ExecutePipeline(
     return a.service.Execute(ctx, submission)
 }
 
-// Registration in module.go
+// Registration in pipeline.go
 fx.Provide(temporal.AsActivity(NewExecutionActivity))
 ```
 
