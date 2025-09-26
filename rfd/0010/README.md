@@ -264,109 +264,9 @@ Task queues follow a three-part naming pattern: `{prefix}-{component}-{queue_typ
 
 ## Task Queue Management
 
-The system uses a constant-based approach for task queue management, providing flexibility and type safety:
+The system uses a consistent three-part naming pattern for task queues: `{prefix}-{component}-{queue_type}`. Each extension defines its task queue suffix as a constant (e.g., `pipeline-default`) and the Temporal client combines it with the environment-specific prefix (e.g., `zinc`) to create the full queue name (e.g., `zinc-pipeline-default`).
 
-### Queue Constants
-
-Each component defines constants for its task queue suffixes (combining component and queue type):
-
-```go
-// internal/temporal/constants.go
-package temporal
-
-const (
-    CoreDefaultQueue = "core-default"
-)
-```
-
-```go
-// internal/api/submission/constants.go
-package submission
-
-const (
-    DefaultTaskQueue = "submission-default"
-)
-```
-
-```go
-// internal/api/pipeline/constants.go
-package pipeline
-
-const (
-    DefaultTaskQueue = "pipeline-default"
-)
-```
-
-### Task Queue Formatting
-
-The Temporal client provides a method to format task queues consistently:
-
-```go
-// FormatTaskQueue creates a fully qualified task queue name
-func (c *Client) FormatTaskQueue(suffix string) string {
-    if suffix == "" {
-        return c.TaskQueuePrefix
-    }
-    return fmt.Sprintf("%s-%s", c.TaskQueuePrefix, suffix)
-}
-```
-
-### Extension Queue Resolution
-
-Extensions compute their task queue names using the prefix received from configuration and provide them as named dependencies for the worker:
-
-```go
-// In extension app initialization
-fx.Provide(
-    fx.Annotate(
-        func(client *temporal.Client) string {
-            return client.FormatTaskQueue(submission.DefaultTaskQueue)
-        },
-        fx.ResultTags(`name:"temporalTaskQueue"`),
-    ),
-)
-```
-
-The worker then consumes this named dependency:
-
-```go
-// internal/temporal/worker.go
-type WorkerParams struct {
-    fx.In
-    Client     *Client
-    TaskQueue  string     `name:"temporalTaskQueue"`  // Named injection
-    Activities []Activity `group:"activity"`
-    Workflows  []Workflow `group:"workflow"`
-}
-
-func NewWorker(params WorkerParams) (worker.Worker, error) {
-    temporalWorker := worker.New(params.Client.Client, params.TaskQueue, worker.Options{})
-    // ... register activities and workflows
-}
-```
-
-### Workflow Task Queue Selection
-
-Workflows use the same formatting method to route activities to appropriate extensions:
-
-```go
-// In workflow execution
-submissionCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-    TaskQueue: client.FormatTaskQueue(submission.DefaultTaskQueue),
-    StartToCloseTimeout: 30 * time.Second,
-})
-
-pipelineCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-    TaskQueue: client.FormatTaskQueue(pipeline.DefaultTaskQueue),
-    StartToCloseTimeout: 5 * time.Minute,
-})
-```
-
-This approach ensures:
-- **Consistency**: All components use the same formatting method
-- **Flexibility**: Extensions can define multiple queue constants for different purposes
-- **Type Safety**: Constants prevent typos and enable IDE support
-- **Maintainability**: Queue definitions are colocated with the components that use them
+Extensions provide their computed task queue as a named FX dependency that the worker consumes, ensuring each extension's activities run on the correct task queue. This approach provides type safety through constants while maintaining flexibility across environments.
 
 ## Workflow Patterns
 
@@ -389,20 +289,21 @@ BatchGradingWorkflow (runs on initiating task queue)
 └── Generate batch summary
 ```
 
-Key implementation pattern:
+Workflows specify the target task queue when calling activities across extensions:
 ```go
-// Workflow uses client to format task queues
+// Call submission extension activity
 ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-    TaskQueue: client.FormatTaskQueue(submission.DefaultTaskQueue),
+    TaskQueue: "zinc-submission-default",
     StartToCloseTimeout: 30 * time.Second,
 })
-err = workflow.ExecuteActivity(ctx, "GetCollectionLatestDeliveries", collectionID).Get(ctx, &deliveries)
+workflow.ExecuteActivity(ctx, "GetCollectionLatestDeliveries", collectionID)
 
+// Call pipeline extension activity
 ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-    TaskQueue: client.FormatTaskQueue(pipeline.DefaultTaskQueue),
+    TaskQueue: "zinc-pipeline-default",
     StartToCloseTimeout: 5 * time.Minute,
 })
-err = workflow.ExecuteActivity(ctx, "ExecutePipeline", delivery).Get(ctx, &result)
+workflow.ExecuteActivity(ctx, "ExecutePipeline", deliveryID)
 ```
 
 Key considerations:
@@ -413,65 +314,12 @@ Key considerations:
 
 ### Activity Design Pattern
 
-Activities are extension-specific and receive dependencies through FX injection. Each extension defines its task queue constants separately and registers activities within its module, keeping activity registration close to the domain logic:
+Activities are extension-specific and receive dependencies through FX injection. Each extension:
+1. Defines task queue constants in `constants.go`
+2. Implements activities with injected services in `activities/` directory
+3. Registers activities and provides task queue in the module file
 
-#### Submission Extension
-```go
-// internal/api/submission/constants.go
-package submission
-
-const DefaultTaskQueue = "submission-default"
-```
-
-```go
-// internal/api/submission/activities/delivery.go
-type DeliveryActivity struct {
-    service submission.Service  // Injected via FX
-    db      *sql.DB             // Injected via FX
-}
-
-func NewDeliveryActivity(service submission.Service, db *sql.DB) *DeliveryActivity {
-    return &DeliveryActivity{service: service, db: db}
-}
-
-func (a *DeliveryActivity) GetCollectionLatestDeliveries(
-    ctx context.Context,
-    collectionID string,
-) ([]Delivery, error) {
-    // Direct database access - no NATS needed
-    return a.service.GetLatestDeliveriesByUser(ctx, collectionID)
-}
-```
-
-```go
-// internal/api/submission/submission.go (module file)
-var Module = fx.Module(
-    "submission",
-    fx.Provide(
-        NewService,
-        transport.AsControllerRoute(NewController),
-        // Register Temporal activities
-        temporal.AsActivity(NewDeliveryActivity),
-        // Provide computed task queue as named dependency
-        fx.Annotate(
-            func(client *temporal.Client) string {
-                return client.FormatTaskQueue(DefaultTaskQueue)
-            },
-            fx.ResultTags(`name:"temporalTaskQueue"`),
-        ),
-        // ... other providers like streams, consumers
-    ),
-)
-```
-
-#### Pipeline Extension
-```go
-// internal/api/pipeline/constants.go
-package pipeline
-
-const DefaultTaskQueue = "pipeline-default"
-```
-
+Example structure for pipeline extension:
 ```go
 // internal/api/pipeline/activities/execution.go
 type ExecutionActivity struct {
@@ -479,37 +327,22 @@ type ExecutionActivity struct {
     storage  storage.Client     // Injected via FX
 }
 
-func NewExecutionActivity(service pipeline.Service, storage storage.Client) *ExecutionActivity {
-    return &ExecutionActivity{service: service, storage: storage}
+func (a *ExecutionActivity) ExecutePipeline(ctx context.Context, deliveryID string) (*Result, error) {
+    // Direct access to local services, no NATS needed
 }
 
-func (a *ExecutionActivity) ExecutePipeline(
-    ctx context.Context,
-    deliveryID string,
-) (*ExecutionResult, error) {
-    // Direct access to storage and pipeline service
-    submission, _ := a.storage.Get(ctx, deliveryID)
-    return a.service.Execute(ctx, submission)
-}
-```
-
-```go
 // internal/api/pipeline/pipeline.go (module file)
 var Module = fx.Module(
     "pipeline",
     fx.Provide(
-        NewService,
-        transport.AsControllerRoute(NewController),
-        // Register Temporal activities
-        temporal.AsActivity(NewExecutionActivity),
-        // Provide computed task queue as named dependency
-        fx.Annotate(
+        // ... existing providers
+        temporal.AsActivity(NewExecutionActivity),  // Register activity
+        fx.Annotate(                                // Provide task queue
             func(client *temporal.Client) string {
                 return client.FormatTaskQueue(DefaultTaskQueue)
             },
             fx.ResultTags(`name:"temporalTaskQueue"`),
         ),
-        // ... other providers like streams, consumers
     ),
 )
 ```
@@ -660,55 +493,16 @@ The migration maintains backward compatibility:
 ## Best Practices
 
 ### Task Queue Design
-
-Based on Temporal documentation and community best practices:
-
-1. **One Task Queue per Extension**: Each extension should have its own task queue to ensure proper worker-to-activity alignment
-2. **Activity Colocation**: Activities should be colocated with the services they depend on
-3. **Explicit Task Queue Routing**: Workflows must explicitly specify task queues when calling activities from different extensions
-4. **Worker Registration**: All workers must register all activities that will execute on their task queue
-
-### Cross-Task-Queue Pattern
-
-```go
-// Best practice: Create activity options for each target task queue
-submissionOpts := workflow.ActivityOptions{
-    TaskQueue:           "zinc-submission",
-    StartToCloseTimeout: 30 * time.Second,
-    RetryPolicy: &temporal.RetryPolicy{
-        MaximumAttempts: 3,
-    },
-}
-
-pipelineOpts := workflow.ActivityOptions{
-    TaskQueue:           "zinc-pipeline",
-    StartToCloseTimeout: 5 * time.Minute,
-    RetryPolicy: &temporal.RetryPolicy{
-        MaximumAttempts: 5,
-        BackoffCoefficient: 2.0,
-    },
-}
-```
+- **One task queue per extension** for proper worker-to-activity alignment
+- **Colocate activities with services** they depend on for direct access
+- **Explicitly route activities** by specifying task queues in workflow activity options
+- **Configure appropriate timeouts and retry policies** based on activity characteristics
 
 ### Activity Design Principles
-
-1. **Direct Service Access**: Activities should directly access their local services, not make network calls
-2. **Idempotency**: Activities must be idempotent to handle retries safely
-3. **Timeout Configuration**: Set appropriate timeouts based on expected execution time
-4. **Error Handling**: Return non-retryable errors for business logic failures
-
-### FX Integration Pattern
-
-```go
-// Extension module registration
-var Module = fx.Options(
-    fx.Provide(
-        temporal.AsActivity(NewDeliveryActivity),
-        temporal.AsActivity(NewProcessingActivity),
-    ),
-    // Worker will be created by internal/temporal with injected activities
-)
-```
+- **Direct service access**: Activities use injected local services, avoiding network calls
+- **Idempotency**: Design activities to handle retries safely
+- **Error handling**: Return non-retryable errors for business logic failures
+- **FX integration**: Register activities using `temporal.AsActivity()` in module definitions
 
 ## Discussion
 
