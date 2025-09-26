@@ -39,56 +39,69 @@ The integration of Temporal aligns with ZINC's architectural principles of modul
 
 ## Proposal
 
-The proposed Temporal integration follows a domain-integrated architecture where workflow definitions and activities reside within their respective domains, both in core and extensions. This approach maintains clear boundaries while providing powerful orchestration capabilities.
+The proposed Temporal integration follows a cross-task-queue architecture where workflows represent high-level orchestration logic at the top level, while activities remain within their respective extensions. This approach leverages Temporal's native capabilities for cross-service communication.
 
 ### High-Level Architecture
 
-The integration consists of three key architectural decisions:
+The integration consists of four key architectural decisions:
 
-1. **Domain-Integrated Structure**: Workflows and activities live alongside their domain logic, preventing tight coupling between unrelated workflows while maintaining cohesion within domains.
+1. **Top-Level Workflows**: Workflows are high-level orchestration concerns that live in the top-level `workflow/` package, representing overall use case flows that may span multiple extensions.
 
-2. **Extension Ownership**: Extensions have full ownership of their workflows and workers, interacting directly with Temporal while receiving connection configuration from core.
+2. **Extension-Specific Activities**: Activities remain within their respective extensions, colocated with the domain services they use. Each activity runs on its extension's task queue, ensuring direct access to local resources.
 
-3. **NATS-Based Coordination**: Cross-extension communication occurs through NATS messaging within activities, maintaining the existing event-driven patterns while ensuring workflows remain deterministic.
+3. **Cross-Task-Queue Execution**: Workflows orchestrate activities across different task queues. When a workflow needs to execute an activity from another extension, it specifies that extension's task queue in the activity options.
+
+4. **Temporal as Communication Layer**: For synchronous cross-extension operations, Temporal replaces NATS. Activities can directly access their local services without additional network hops, while NATS remains for asynchronous event-driven patterns.
 
 ### Core Components
 
-**Temporal Infrastructure Package** (`internal/temporal/`): A minimal shared package providing:
+**Temporal Infrastructure Package** (`internal/temporal/`): Shared infrastructure providing:
 - Client wrapper with connection management
-- Worker lifecycle management with FX integration
-- Helper types for workflow and activity registration
-- Configuration structures
+- Worker lifecycle management with FX injection for activities and configuration
+- Helper types for workflow and activity registration (`AsActivity`, `AsWorkflow`)
+- Configuration structures with task queue management
 
-**Domain Workflows**: Each domain (core and extensions) defines its own workflows:
-- Submission processing workflows in submission extension
-- Batch grading workflows in pipeline extension
+**Top-Level Workflows** (`workflow/`): High-level orchestration logic:
+- Batch grading workflows that span submission and pipeline extensions
+- Future: Other cross-cutting workflows like exam scheduling
 
-**Configuration Service Enhancement**: The existing extension configuration service is enhanced to provide Temporal connection details to extensions.
+**Extension Activities**: Each extension defines activities colocated with their services:
+- Submission extension: `GetCollectionLatestDeliveries` activity
+- Pipeline extension: `ExecutePipeline` activity
+
+**Configuration Service Enhancement**: The existing extension configuration service provides Temporal connection details and task queue names to extensions.
 
 ## Architecture
 
 ### Package Structure
 
-The architecture follows a domain-integrated approach with minimal shared infrastructure:
+The architecture separates high-level workflows from extension-specific activities:
 
 ```
 zinc-core/
-├── internal/temporal/         # Minimal shared infrastructure
+├── workflow/                  # Top-level orchestration logic
+│   ├── grading/
+│   │   └── batch_grading.go  # Batch grading workflow
+│   └── module.go              # FX module for workflow registration
+│
+├── internal/temporal/         # Shared Temporal infrastructure
 │   ├── client.go              # Client wrapper with connection management
-│   ├── worker.go              # Worker with group injection
+│   ├── worker.go              # Worker with FX activity/config injection
 │   ├── types.go               # AsActivity/AsWorkflow helper functions
-│   └── module.go              # FX modules (Module and WorkerModule)
+│   └── module.go              # FX modules for Temporal setup
 │
-├── internal/api/pipeline/     # Extension-specific Temporal integration
-│   ├── workflow.go            # Batch grading workflows
-│   ├── activities.go          # Batch-specific activities
-│   └── module.go              # FX registration for pipeline workflows
+├── internal/api/submission/   # Submission extension
+│   ├── activities/
+│   │   └── delivery.go        # GetCollectionLatestDeliveries activity
+│   └── module.go              # FX registration with AsActivity
 │
-├── internal/extension/        # Extension configuration service
-│   └── service.go             # Enhanced with Temporal config distribution
+├── internal/api/pipeline/     # Pipeline extension
+│   ├── activities/
+│   │   └── execution.go       # ExecutePipeline activity
+│   └── module.go              # FX registration with AsActivity
 │
-└── internal/pipeline/         # Pipeline domain logic
-    └── service.go             # Pipeline processing service
+└── internal/extension/        # Extension configuration service
+    └── service.go             # Enhanced with Temporal config and task queues
 ```
 
 ### System Architecture Diagram
@@ -98,104 +111,111 @@ graph TB
     subgraph "ZINC Core"
         Core[Core Services]
         ExtConfig[Extension Config Service]
-        CoreWorker[Core Worker]
-        CoreWF[Core Workflows]
+        TopWF[Top-Level Workflows]
+        TempInfra[Temporal Infrastructure]
     end
 
-    subgraph "Temporal Infrastructure"
+    subgraph "Temporal Server"
         TemporalServer[Temporal Server]
         TemporalDB[(History & Visibility)]
+        TQSub[Task Queue: zinc-submission]
+        TQPipe[Task Queue: zinc-pipeline]
     end
 
     subgraph "Submission Extension"
-        SubClient[Temporal Client]
-        SubWorker[Submission Worker]
-        SubWF[Submission Workflows]
-        SubAct[Submission Activities]
+        SubWorker[Worker<br/>zinc-submission]
+        SubAct[GetCollectionLatestDeliveries<br/>Activity]
         SubSvc[Submission Service]
+        SubDB[(Submission DB)]
     end
 
     subgraph "Pipeline Extension"
-        PipeClient[Temporal Client]
-        PipeWorker[Pipeline Worker]
-        PipeWF[Pipeline Workflows]
-        BatchWF[Batch Grading Workflows]
-        PipeAct[Pipeline Activities]
-    end
-
-    subgraph "Message Broker"
-        NATS[NATS Server]
+        PipeWorker[Worker<br/>zinc-pipeline]
+        PipeAct[ExecutePipeline<br/>Activity]
+        PipeSvc[Pipeline Service]
     end
 
     subgraph "Storage"
         ObjectStore[(Object Storage)]
     end
 
-    Core --> ExtConfig
-    ExtConfig -.->|Config| SubClient
-    ExtConfig -.->|Config| PipeClient
+    subgraph "Message Broker"
+        NATS[NATS Server<br/>for async events]
+    end
 
-    CoreWorker --> TemporalServer
-    SubWorker --> TemporalServer
-    PipeWorker --> TemporalServer
+    %% Configuration flow
+    ExtConfig -.->|Task queue config| SubWorker
+    ExtConfig -.->|Task queue config| PipeWorker
 
-    CoreWF --> CoreWorker
-    SubWF --> SubWorker
-    PipeWF --> PipeWorker
-    BatchWF --> PipeWorker
+    %% Worker registration
+    SubWorker -->|Poll| TQSub
+    PipeWorker -->|Poll| TQPipe
+    TempInfra -->|Start workflow| TemporalServer
 
-    PipeAct -->|Request deliveries| NATS
-    NATS -->|Forward request| SubSvc
-    PipeAct -->|Pull submission| ObjectStore
-    PipeAct -->|Store results| ObjectStore
-    SubAct --> NATS
-    NATS --> Core
+    %% Workflow execution across task queues
+    TopWF -->|Execute on TQ| TQSub
+    TopWF -->|Execute on TQ| TQPipe
+
+    %% Activity dependencies
+    SubAct --> SubSvc
+    SubSvc --> SubDB
+    PipeAct --> PipeSvc
+    PipeAct --> ObjectStore
+
+    %% Async events still use NATS
+    Core --> NATS
+    SubSvc -.->|Async events| NATS
+    PipeSvc -.->|Async events| NATS
 ```
 
 ### Extension Integration Pattern
 
-Extensions interact with Temporal through a well-defined pattern:
+Extensions interact with Temporal through FX dependency injection:
 
-1. **Configuration Retrieval**: Extensions request Temporal configuration during initialization
-2. **Client Creation**: Each extension creates its own Temporal client using provided configuration
-3. **Worker Management**: Extensions manage their own workers with domain-specific task queues
-4. **Workflow Registration**: Extensions register their workflows and activities with their workers
+1. **Configuration Injection**: Extensions receive Temporal configuration and task queue names via FX
+2. **Activity Registration**: Activities are registered using `temporal.AsActivity()` in FX modules
+3. **Worker Creation**: The shared `internal/temporal/worker.go` creates workers with injected activities and configuration
+4. **Task Queue Assignment**: Each extension's worker polls its specific task queue for activities
 
 ### Cross-Extension Communication
 
-Communication between extensions follows the established NATS pattern within activities. The pipeline extension coordinates batch grading through two distinct activities:
+Temporal enables direct cross-extension communication through task queue routing, eliminating NATS for synchronous operations:
 
 ```mermaid
 sequenceDiagram
     participant User as User/API
-    participant PE as Pipeline Extension
+    participant Core as Core/Workflow Starter
     participant BW as Batch Grading Workflow
-    participant GDA as GetDeliveries Activity
-    participant PEA as Pipeline Execution Activity
-    participant NATS as NATS Broker
-    participant SE as Submission Extension
+    participant TSub as Temporal<br/>zinc-submission TQ
+    participant TPipe as Temporal<br/>zinc-pipeline TQ
+    participant SubAct as GetDeliveries Activity<br/>(Submission Extension)
+    participant PipeAct as ExecutePipeline Activity<br/>(Pipeline Extension)
+    participant SubSvc as Submission Service
     participant OS as Object Storage
 
-    User->>PE: Request batch grading
-    PE->>BW: StartWorkflow(collection_id, config_id)
-    BW->>GDA: GetCollectionLatestDeliveries()
-    GDA->>NATS: Request("submission.deliveries.list")
-    NATS->>SE: Forward request
-    SE->>SE: Query latest deliveries by user
-    SE->>NATS: Return delivery list
-    NATS->>GDA: Delivery list with IDs
-    GDA-->>BW: List of delivery IDs
+    User->>Core: Request batch grading
+    Core->>BW: StartWorkflow(collection_id, config_id)
+
+    Note over BW: Set TaskQueue: zinc-submission
+    BW->>TSub: ExecuteActivity(GetCollectionLatestDeliveries)
+    TSub->>SubAct: Route to submission worker
+    SubAct->>SubSvc: Query latest deliveries by user
+    SubSvc-->>SubAct: Delivery list
+    SubAct-->>BW: List of delivery IDs
 
     loop For each delivery
-        BW->>PEA: ExecutePipeline(delivery_id)
-        PEA->>OS: Pull submission data
-        OS-->>PEA: Submission content
-        PEA->>PEA: Execute grading pipeline
-        PEA->>OS: Store grading results
-        PEA-->>BW: Pipeline execution complete
+        Note over BW: Set TaskQueue: zinc-pipeline
+        BW->>TPipe: ExecuteActivity(ExecutePipeline, delivery_id)
+        TPipe->>PipeAct: Route to pipeline worker
+        PipeAct->>OS: Pull submission data
+        OS-->>PipeAct: Submission content
+        PipeAct->>PipeAct: Execute grading pipeline
+        PipeAct->>OS: Store grading results
+        PipeAct-->>BW: Pipeline execution complete
     end
-    BW-->>PE: All deliveries graded
-    PE-->>User: Batch results
+
+    BW-->>Core: All deliveries graded
+    Core-->>User: Batch results
 ```
 
 ## Configuration Management
@@ -240,28 +260,45 @@ Namespaces are environment-based to provide clean separation:
 - `zinc-prod` for production
 
 Each extension uses a unique task queue within the namespace:
-- `zinc-core-default`
-- `zinc-submission-default`
-- `zinc-pipeline-default`
+- `zinc-submission` - Submission extension's task queue
+- `zinc-pipeline` - Pipeline extension's task queue
+- Future extensions will follow the pattern: `zinc-{extension-name}`
 
 ## Workflow Patterns
 
 ### Batch Processing Pattern
 
-Batch workflows handle large-scale operations with controlled concurrency:
+Batch workflows orchestrate activities across different task queues:
 
 ```
-BatchGradingWorkflow
+BatchGradingWorkflow (runs on initiating task queue)
 ├── Validate batch parameters (collection_id, config_id)
-├── Fetch latest deliveries via NATS request
+├── Execute GetCollectionLatestDeliveries (on zinc-submission queue)
 ├── Prepare batch metadata
 ├── For each delivery (parallel with limits)
-│   ├── Pull submission from object storage
-│   ├── Execute grading pipeline
-│   ├── Handle failures with retry
-│   └── Store results to object storage
+│   └── Execute ExecutePipeline (on zinc-pipeline queue)
+│       ├── Pull submission from object storage
+│       ├── Execute grading pipeline
+│       ├── Handle failures with retry
+│       └── Store results to object storage
 ├── Aggregate results
 └── Generate batch summary
+```
+
+Key implementation pattern:
+```go
+// Workflow specifies task queue for each activity
+ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+    TaskQueue: "zinc-submission",
+    StartToCloseTimeout: 30 * time.Second,
+})
+err = workflow.ExecuteActivity(ctx, "GetCollectionLatestDeliveries", collectionID).Get(ctx, &deliveries)
+
+ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+    TaskQueue: "zinc-pipeline",
+    StartToCloseTimeout: 5 * time.Minute,
+})
+err = workflow.ExecuteActivity(ctx, "ExecutePipeline", delivery).Get(ctx, &result)
 ```
 
 Key considerations:
@@ -272,34 +309,56 @@ Key considerations:
 
 ### Activity Design Pattern
 
-Activities encapsulate non-deterministic operations and external interactions. For batch grading, two primary activities handle different responsibilities:
+Activities are extension-specific and receive dependencies through FX injection:
 
-#### GetCollectionLatestDeliveriesActivity
-```
-GetCollectionLatestDeliveriesActivity
-├── Validate collection ID and config ID
-├── Create NATS request payload
-├── Send request to submission extension via NATS
-├── Wait for response with timeout
-├── Parse delivery list from response
-├── Filter for committed status deliveries only
-└── Return list of delivery IDs
+#### Submission Extension Activity
+```go
+// internal/api/submission/activities/delivery.go
+type DeliveryActivity struct {
+    service submission.Service  // Injected via FX
+    db      *sql.DB             // Injected via FX
+}
+
+func NewDeliveryActivity(service submission.Service, db *sql.DB) *DeliveryActivity {
+    return &DeliveryActivity{service: service, db: db}
+}
+
+func (a *DeliveryActivity) GetCollectionLatestDeliveries(
+    ctx context.Context,
+    collectionID string,
+) ([]Delivery, error) {
+    // Direct database access - no NATS needed
+    return a.service.GetLatestDeliveriesByUser(ctx, collectionID)
+}
+
+// Registration in module.go
+fx.Provide(temporal.AsActivity(NewDeliveryActivity))
 ```
 
-#### PipelineExecutionActivity
-```
-PipelineExecutionActivity
-├── Validate delivery ID
-├── Pull submission content from object storage
-├── Prepare pipeline execution context
-├── Execute grading pipeline
-├── Collect execution results
-├── Store results in object storage
-├── Update pipeline run records
-└── Return execution status
-```
+#### Pipeline Extension Activity
+```go
+// internal/api/pipeline/activities/execution.go
+type ExecutionActivity struct {
+    service  pipeline.Service   // Injected via FX
+    storage  storage.Client     // Injected via FX
+}
 
-Activities receive dependencies through FX injection, maintaining clean separation from workflows.
+func NewExecutionActivity(service pipeline.Service, storage storage.Client) *ExecutionActivity {
+    return &ExecutionActivity{service: service, storage: storage}
+}
+
+func (a *ExecutionActivity) ExecutePipeline(
+    ctx context.Context,
+    deliveryID string,
+) (*ExecutionResult, error) {
+    // Direct access to storage and pipeline service
+    submission, _ := a.storage.Get(ctx, deliveryID)
+    return a.service.Execute(ctx, submission)
+}
+
+// Registration in module.go
+fx.Provide(temporal.AsActivity(NewExecutionActivity))
+```
 
 ### Workflow Versioning
 
@@ -329,28 +388,28 @@ Extensions have complete control over their workflow definitions:
 
 ### Workflow Boundaries
 
-Workflows are strictly scoped to their extensions:
-- No direct workflow-to-workflow calls across extensions
-- Cross-extension interaction only through NATS in activities
-- Clear ownership and responsibility boundaries
+Workflows and activities have clear separation:
+- Workflows are top-level orchestration logic, not tied to extensions
+- Activities are extension-specific and run on their extension's task queue
+- Cross-extension interaction happens through Temporal's task queue routing
+- No direct service-to-service calls needed for synchronous operations
 
 ### Extension Lifecycle
 
-Extensions manage their Temporal lifecycle independently:
+Extensions integrate with Temporal through FX:
 
 ```
 Extension Startup:
-1. Retrieve Temporal config from core
-2. Create Temporal client
-3. Initialize worker with task queue
-4. Register workflows and activities
-5. Start worker
+1. Register activities using temporal.AsActivity() in FX module
+2. Temporal config and task queue injected via FX
+3. Worker created by internal/temporal/worker.go with injected activities
+4. Worker starts polling extension's task queue
+5. Activities have access to extension's services
 
 Extension Shutdown:
-1. Stop accepting new workflows
-2. Wait for current executions
-3. Shutdown worker gracefully
-4. Close client connection
+1. FX lifecycle stops worker gracefully
+2. Wait for current activity executions
+3. Close Temporal client connection
 ```
 
 ## Security Considerations
@@ -419,15 +478,16 @@ The integration follows a phased migration strategy:
 - Implement shared Temporal package
 - Set up monitoring and observability
 
-**Phase 2: Batch Grading**
-- Implement batch grading workflows in pipeline extension
-- Migrate existing batch operations
-- Validate performance and reliability
+**Phase 2: Core Workflow Infrastructure**
+- Implement top-level workflow package structure
+- Create batch grading workflow in workflow/grading/
+- Set up workflow registration with FX
 
-**Phase 3: Extension Integration**
-- Update extension configuration service
-- Implement Temporal in submission extension
-- Implement Temporal in pipeline extension
+**Phase 3: Extension Activity Implementation**
+- Implement GetCollectionLatestDeliveries in submission extension
+- Implement ExecutePipeline in pipeline extension
+- Register activities using temporal.AsActivity()
+- Configure task queues for each extension
 
 **Phase 4: Advanced Features**
 - Implement complex workflow patterns
@@ -442,6 +502,59 @@ The migration maintains backward compatibility:
 - Extensions can adopt Temporal incrementally
 - Core APIs remain unchanged
 - Gradual migration of batch operations
+
+## Best Practices
+
+### Task Queue Design
+
+Based on Temporal documentation and community best practices:
+
+1. **One Task Queue per Extension**: Each extension should have its own task queue to ensure proper worker-to-activity alignment
+2. **Activity Colocation**: Activities should be colocated with the services they depend on
+3. **Explicit Task Queue Routing**: Workflows must explicitly specify task queues when calling activities from different extensions
+4. **Worker Registration**: All workers must register all activities that will execute on their task queue
+
+### Cross-Task-Queue Pattern
+
+```go
+// Best practice: Create activity options for each target task queue
+submissionOpts := workflow.ActivityOptions{
+    TaskQueue:           "zinc-submission",
+    StartToCloseTimeout: 30 * time.Second,
+    RetryPolicy: &temporal.RetryPolicy{
+        MaximumAttempts: 3,
+    },
+}
+
+pipelineOpts := workflow.ActivityOptions{
+    TaskQueue:           "zinc-pipeline",
+    StartToCloseTimeout: 5 * time.Minute,
+    RetryPolicy: &temporal.RetryPolicy{
+        MaximumAttempts: 5,
+        BackoffCoefficient: 2.0,
+    },
+}
+```
+
+### Activity Design Principles
+
+1. **Direct Service Access**: Activities should directly access their local services, not make network calls
+2. **Idempotency**: Activities must be idempotent to handle retries safely
+3. **Timeout Configuration**: Set appropriate timeouts based on expected execution time
+4. **Error Handling**: Return non-retryable errors for business logic failures
+
+### FX Integration Pattern
+
+```go
+// Extension module registration
+var Module = fx.Options(
+    fx.Provide(
+        temporal.AsActivity(NewDeliveryActivity),
+        temporal.AsActivity(NewProcessingActivity),
+    ),
+    // Worker will be created by internal/temporal with injected activities
+)
+```
 
 ## Discussion
 
@@ -530,15 +643,17 @@ Performance considerations:
 
 ## Conclusion
 
-The integration of Temporal workflow orchestration into ZINC addresses critical gaps in handling complex, long-running academic workflows while maintaining the modular architecture established by the extension system. The domain-integrated approach ensures clear separation of concerns, with extensions maintaining full ownership of their workflows while leveraging shared infrastructure.
+The integration of Temporal workflow orchestration into ZINC addresses critical gaps in handling complex, long-running academic workflows while maintaining the modular architecture established by the extension system. The cross-task-queue architecture ensures clear separation between orchestration logic and domain implementation.
 
 Key benefits of this integration include:
 
 - **Reliability**: Durable execution ensures workflows complete despite failures
 - **Scalability**: Controlled concurrency and resource management for large-scale processing
 - **Visibility**: Complete observability into workflow execution and state
-- **Flexibility**: Extensions can evolve their workflows independently
-- **Maintainability**: Clear boundaries and patterns reduce complexity
+- **Direct Communication**: Temporal replaces NATS for synchronous cross-extension calls
+- **Service Locality**: Activities have direct access to their extension's services
+- **Simplified Architecture**: No request/response patterns needed for activity communication
+- **Maintainability**: Clear separation between workflows (orchestration) and activities (implementation)
 
 The proposed architecture provides a solid foundation for current requirements while remaining extensible for future needs. The phased migration approach ensures smooth adoption with minimal disruption to existing operations.
 
