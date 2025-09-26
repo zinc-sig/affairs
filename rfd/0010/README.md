@@ -226,15 +226,14 @@ The system employs a simple, extensible configuration approach:
 
 ```yaml
 temporal:
-  host: temporal.example.com
-  port: 7233
-  namespace: zinc-dev  # Environment-specific
-  task_queue_prefix: zinc
+  host_port: temporal.example.com:7233  # Combined host:port format
+  namespace: zinc-dev                    # Environment-specific
+  task_queue_prefix: zinc                # Prefix for all task queues
 ```
 
 ### Extension Configuration Distribution
 
-The extension service provides Temporal configuration through the existing configuration mechanism:
+The extension service provides Temporal configuration through the existing configuration mechanism. Extensions receive the task queue prefix and compute their specific queues:
 
 ```protobuf
 message Configuration {
@@ -245,10 +244,9 @@ message Configuration {
 // Extension receives:
 // name: "temporal"
 // properties: {
-//   "host": "temporal.example.com",
-//   "port": "7233",
+//   "host_port": "temporal.example.com:7233",
 //   "namespace": "zinc-dev",
-//   "task_queue": "zinc-submission"  # Extension-specific
+//   "task_queue_prefix": "zinc"  # Prefix only, not computed queue
 // }
 ```
 
@@ -259,10 +257,116 @@ Namespaces are environment-based to provide clean separation:
 - `zinc-staging` for staging
 - `zinc-prod` for production
 
-Each extension uses a unique task queue within the namespace:
-- `zinc-submission` - Submission extension's task queue
-- `zinc-pipeline` - Pipeline extension's task queue
-- Future extensions will follow the pattern: `zinc-{extension-name}`
+Task queues follow a three-part naming pattern: `{prefix}-{component}-{queue_type}`:
+- Core services: `zinc-core-default` (for core workflows)
+- Submission extension: `zinc-submission-default` (for submission activities)
+- Pipeline extension: `zinc-pipeline-default` (for pipeline activities)
+
+## Task Queue Management
+
+The system uses a constant-based approach for task queue management, providing flexibility and type safety:
+
+### Queue Constants
+
+Each component defines constants for its task queue suffixes (combining component and queue type):
+
+```go
+// internal/temporal/constants.go
+package temporal
+
+const (
+    CoreDefaultQueue = "core-default"
+)
+```
+
+```go
+// internal/api/submission/constants.go
+package submission
+
+const (
+    DefaultTaskQueue = "submission-default"
+)
+```
+
+```go
+// internal/api/pipeline/constants.go
+package pipeline
+
+const (
+    DefaultTaskQueue = "pipeline-default"
+)
+```
+
+### Task Queue Formatting
+
+The Temporal client provides a method to format task queues consistently:
+
+```go
+// FormatTaskQueue creates a fully qualified task queue name
+func (c *Client) FormatTaskQueue(suffix string) string {
+    if suffix == "" {
+        return c.TaskQueuePrefix
+    }
+    return fmt.Sprintf("%s-%s", c.TaskQueuePrefix, suffix)
+}
+```
+
+### Extension Queue Resolution
+
+Extensions compute their task queue names using the prefix received from configuration and provide them as named dependencies for the worker:
+
+```go
+// In extension app initialization
+fx.Provide(
+    fx.Annotate(
+        func(client *temporal.Client) string {
+            return client.FormatTaskQueue(submission.DefaultTaskQueue)
+        },
+        fx.ResultTags(`name:"temporalTaskQueue"`),
+    ),
+)
+```
+
+The worker then consumes this named dependency:
+
+```go
+// internal/temporal/worker.go
+type WorkerParams struct {
+    fx.In
+    Client     *Client
+    TaskQueue  string     `name:"temporalTaskQueue"`  // Named injection
+    Activities []Activity `group:"activity"`
+    Workflows  []Workflow `group:"workflow"`
+}
+
+func NewWorker(params WorkerParams) (worker.Worker, error) {
+    temporalWorker := worker.New(params.Client.Client, params.TaskQueue, worker.Options{})
+    // ... register activities and workflows
+}
+```
+
+### Workflow Task Queue Selection
+
+Workflows use the same formatting method to route activities to appropriate extensions:
+
+```go
+// In workflow execution
+submissionCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+    TaskQueue: client.FormatTaskQueue(submission.DefaultTaskQueue),
+    StartToCloseTimeout: 30 * time.Second,
+})
+
+pipelineCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+    TaskQueue: client.FormatTaskQueue(pipeline.DefaultTaskQueue),
+    StartToCloseTimeout: 5 * time.Minute,
+})
+```
+
+This approach ensures:
+- **Consistency**: All components use the same formatting method
+- **Flexibility**: Extensions can define multiple queue constants for different purposes
+- **Type Safety**: Constants prevent typos and enable IDE support
+- **Maintainability**: Queue definitions are colocated with the components that use them
 
 ## Workflow Patterns
 
@@ -287,15 +391,15 @@ BatchGradingWorkflow (runs on initiating task queue)
 
 Key implementation pattern:
 ```go
-// Workflow specifies task queue for each activity
+// Workflow uses client to format task queues
 ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-    TaskQueue: "zinc-submission",
+    TaskQueue: client.FormatTaskQueue(submission.DefaultTaskQueue),
     StartToCloseTimeout: 30 * time.Second,
 })
 err = workflow.ExecuteActivity(ctx, "GetCollectionLatestDeliveries", collectionID).Get(ctx, &deliveries)
 
 ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-    TaskQueue: "zinc-pipeline",
+    TaskQueue: client.FormatTaskQueue(pipeline.DefaultTaskQueue),
     StartToCloseTimeout: 5 * time.Minute,
 })
 err = workflow.ExecuteActivity(ctx, "ExecutePipeline", delivery).Get(ctx, &result)
@@ -309,9 +413,16 @@ Key considerations:
 
 ### Activity Design Pattern
 
-Activities are extension-specific and receive dependencies through FX injection:
+Activities are extension-specific and receive dependencies through FX injection. Each extension defines its task queue constants and provides them as named dependencies:
 
-#### Submission Extension Activity
+#### Submission Extension
+```go
+// internal/api/submission/constants.go
+package submission
+
+const DefaultTaskQueue = "submission-default"
+```
+
 ```go
 // internal/api/submission/activities/delivery.go
 type DeliveryActivity struct {
@@ -330,12 +441,36 @@ func (a *DeliveryActivity) GetCollectionLatestDeliveries(
     // Direct database access - no NATS needed
     return a.service.GetLatestDeliveriesByUser(ctx, collectionID)
 }
-
-// Registration in submission.go
-fx.Provide(temporal.AsActivity(NewDeliveryActivity))
 ```
 
-#### Pipeline Extension Activity
+```go
+// Extension app configuration (internal/app/app.go)
+func NewSubmissionExtension(cfg Config, consoleWriter io.Writer) *fx.App {
+    return fx.New(
+        // ... other modules
+        fx.Provide(
+            temporal.AsActivity(NewDeliveryActivity),
+            // Provide the computed task queue as a named dependency
+            fx.Annotate(
+                func(client *temporal.Client) string {
+                    return client.FormatTaskQueue(submission.DefaultTaskQueue)
+                },
+                fx.ResultTags(`name:"temporalTaskQueue"`),
+            ),
+        ),
+        temporal.WorkerModule, // Consumes the named task queue
+    )
+}
+```
+
+#### Pipeline Extension
+```go
+// internal/api/pipeline/constants.go
+package pipeline
+
+const DefaultTaskQueue = "pipeline-default"
+```
+
 ```go
 // internal/api/pipeline/activities/execution.go
 type ExecutionActivity struct {
@@ -355,9 +490,26 @@ func (a *ExecutionActivity) ExecutePipeline(
     submission, _ := a.storage.Get(ctx, deliveryID)
     return a.service.Execute(ctx, submission)
 }
+```
 
-// Registration in pipeline.go
-fx.Provide(temporal.AsActivity(NewExecutionActivity))
+```go
+// Extension app configuration (internal/app/app.go)
+func NewPipelineExtension(cfg Config, consoleWriter io.Writer) *fx.App {
+    return fx.New(
+        // ... other modules
+        fx.Provide(
+            temporal.AsActivity(NewExecutionActivity),
+            // Provide the computed task queue as a named dependency
+            fx.Annotate(
+                func(client *temporal.Client) string {
+                    return client.FormatTaskQueue(pipeline.DefaultTaskQueue)
+                },
+                fx.ResultTags(`name:"temporalTaskQueue"`),
+            ),
+        ),
+        temporal.WorkerModule, // Consumes the named task queue
+    )
+}
 ```
 
 ### Workflow Versioning
