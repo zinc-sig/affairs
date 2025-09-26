@@ -413,7 +413,7 @@ Key considerations:
 
 ### Activity Design Pattern
 
-Activities are extension-specific and receive dependencies through FX injection. Each extension defines its task queue constants and provides them as named dependencies:
+Activities are extension-specific and receive dependencies through FX injection. Each extension defines its task queue constants separately and registers activities within its module, keeping activity registration close to the domain logic:
 
 #### Submission Extension
 ```go
@@ -444,23 +444,24 @@ func (a *DeliveryActivity) GetCollectionLatestDeliveries(
 ```
 
 ```go
-// Extension app configuration (internal/app/app.go)
-func NewSubmissionExtension(cfg Config, consoleWriter io.Writer) *fx.App {
-    return fx.New(
-        // ... other modules
-        fx.Provide(
-            temporal.AsActivity(NewDeliveryActivity),
-            // Provide the computed task queue as a named dependency
-            fx.Annotate(
-                func(client *temporal.Client) string {
-                    return client.FormatTaskQueue(submission.DefaultTaskQueue)
-                },
-                fx.ResultTags(`name:"temporalTaskQueue"`),
-            ),
+// internal/api/submission/submission.go (module file)
+var Module = fx.Module(
+    "submission",
+    fx.Provide(
+        NewService,
+        transport.AsControllerRoute(NewController),
+        // Register Temporal activities
+        temporal.AsActivity(NewDeliveryActivity),
+        // Provide computed task queue as named dependency
+        fx.Annotate(
+            func(client *temporal.Client) string {
+                return client.FormatTaskQueue(DefaultTaskQueue)
+            },
+            fx.ResultTags(`name:"temporalTaskQueue"`),
         ),
-        temporal.WorkerModule, // Consumes the named task queue
-    )
-}
+        // ... other providers like streams, consumers
+    ),
+)
 ```
 
 #### Pipeline Extension
@@ -493,23 +494,24 @@ func (a *ExecutionActivity) ExecutePipeline(
 ```
 
 ```go
-// Extension app configuration (internal/app/app.go)
-func NewPipelineExtension(cfg Config, consoleWriter io.Writer) *fx.App {
-    return fx.New(
-        // ... other modules
-        fx.Provide(
-            temporal.AsActivity(NewExecutionActivity),
-            // Provide the computed task queue as a named dependency
-            fx.Annotate(
-                func(client *temporal.Client) string {
-                    return client.FormatTaskQueue(pipeline.DefaultTaskQueue)
-                },
-                fx.ResultTags(`name:"temporalTaskQueue"`),
-            ),
+// internal/api/pipeline/pipeline.go (module file)
+var Module = fx.Module(
+    "pipeline",
+    fx.Provide(
+        NewService,
+        transport.AsControllerRoute(NewController),
+        // Register Temporal activities
+        temporal.AsActivity(NewExecutionActivity),
+        // Provide computed task queue as named dependency
+        fx.Annotate(
+            func(client *temporal.Client) string {
+                return client.FormatTaskQueue(DefaultTaskQueue)
+            },
+            fx.ResultTags(`name:"temporalTaskQueue"`),
         ),
-        temporal.WorkerModule, // Consumes the named task queue
-    )
-}
+        // ... other providers like streams, consumers
+    ),
+)
 ```
 
 ### Workflow Versioning
