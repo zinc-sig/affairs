@@ -52,14 +52,25 @@ proctoring extension ──── NATS ──── core         LiveKit SFU
 
 ### HTTP routes
 
-| Method | Path                                    | Authorization                                     |
-|--------|-----------------------------------------|---------------------------------------------------|
-| POST   | `/v1/proctoring/rooms`                  | `can_edit` on activity                            |
-| DELETE | `/v1/proctoring/rooms/:name`            | `can_edit` on activity                            |
-| POST   | `/v1/proctoring/rooms/:name/tokens`     | `examinee` or `can_edit` on activity              |
-| POST   | `/v1/proctoring/webhooks/livekit`       | LiveKit-signed (`Authorization` JWT, no session)  |
+| Method | Path                                                | Authorization                                     |
+|--------|-----------------------------------------------------|---------------------------------------------------|
+| POST   | `/v1/proctoring/rooms`                              | `can_edit` on activity                            |
+| GET    | `/v1/proctoring/rooms?activity_id=<id>`             | `examinee` or `can_edit` on activity              |
+| DELETE | `/v1/proctoring/rooms/:name`                        | `can_edit` on room's parent activity              |
+| POST   | `/v1/proctoring/rooms/:name/tokens`                 | room membership (student) or `can_edit` (staff)   |
+| POST   | `/v1/proctoring/webhooks/livekit`                   | LiveKit-signed (`Authorization` JWT, no session)  |
 
 All routes except the webhook endpoint are mounted behind `RequireAuthenticated`. The webhook endpoint is verified using `webhook.ReceiveWebhookEvent` from `github.com/livekit/protocol/webhook`; the existing ghost-pipeline webhook in `core` (query-string token, no cryptographic verification) is explicitly not a template.
+
+### Rooms and membership
+
+One activity maps to **many rooms**, so large cohorts can be split into separate invigilation groups (e.g. by course section, physical lab, or staff-level grouping). The extension persists `(room_name, activity_id, participant_identities[])` tuples in-memory for each live room; the follow-up RFD will back this with a `proctoring_sessions` table.
+
+Room creation takes an explicit name chosen by the staff caller (`POST /v1/proctoring/rooms` with body `{name, activity_id, participant_ids}`). The name is forwarded verbatim to `RoomServiceClient.CreateRoom` and must be unique across active rooms; collisions are rejected. `participant_ids` is the list of student user IDs allowed into this specific room.
+
+Room-listing (`GET /v1/proctoring/rooms?activity_id=…`) returns the rooms the caller can join: for a staff user with `can_edit`, every room on the activity; for a student with `examinee`, only the rooms whose `participant_ids` contains their identity (normally exactly one). This is the student client's discovery step before requesting a token.
+
+Token issuance authorization therefore has two layers for students: they must hold `examinee` on the parent activity (unchanged), **and** their identity must appear in the target room's `participant_ids`. Staff authorization stays at `can_edit` on the parent activity.
 
 ### Token grants
 
@@ -68,7 +79,7 @@ Tokens are short-lived (≤ 10 min) JWTs signed by the extension and fetched cli
 | Field                  | Student                | Invigilator     |
 |------------------------|------------------------|-----------------|
 | `RoomJoin`             | true                   | true            |
-| `Room`                 | `activity-<id>`        | `activity-<id>` |
+| `Room`                 | `<room name>`          | `<room name>`   |
 | `CanPublish`           | **true**               | false           |
 | `CanSubscribe`         | **false**              | **true**        |
 | `CanPublishData`       | false                  | false           |
@@ -131,13 +142,11 @@ LiveKit retries on delivery failure, so handlers must be idempotent and dedupe o
 
 ## End-to-End Lifecycle
 
-Per-room state is an in-memory map keyed on the LiveKit room name; the follow-up RFD will introduce a `proctoring_sessions` table.
+1. **Exam start.** Staff opens `/activities/:id/invigilate` in the staff app, configures one or more invigilation groups (name + participant set per group) and clicks **Start proctoring**. For each group, the client calls `POST /v1/proctoring/rooms` with `{name, activity_id, participant_ids}`. Extension checks `can_edit` on the activity, calls `RoomServiceClient.CreateRoom(name, EmptyTimeout=600)`, records the membership, returns `{room, wss_url}`.
 
-1. **Exam start.** Staff opens `/activities/:id/invigilate` in the staff app and clicks **Start proctoring**. Client calls `POST /v1/proctoring/rooms`. Extension checks `can_edit` on activity, calls `RoomServiceClient.CreateRoom(name="activity-<id>", EmptyTimeout=600)`, records the room, returns `{room, wss_url}`.
+2. **Student join.** Student opens `/activities/:id/proctored` in the student app. Client calls `GET /v1/proctoring/rooms?activity_id=<id>` to resolve the student's assigned room, then `POST /v1/proctoring/rooms/:name/tokens`. Extension verifies the caller's identity is in the room's `participant_ids`, issues a student grant, returns `{token, wss_url}`. Client constructs the `Room` (VP8 + simulcast + Dynacast), calls `room.connect(wss, token, { autoSubscribe: false })`, then `setCameraEnabled(true)`, `setMicrophoneEnabled(true)`, and `setScreenShareEnabled(true)`. The browser prompts for camera / microphone access once and for screen-share target on every `setScreenShareEnabled(true)` call. LiveKit fires `participant_joined` and one `track_published` per source.
 
-2. **Student join.** Student opens `/activities/:id/proctored` in the student app. Client calls `POST /v1/proctoring/rooms/activity-<id>/tokens`. Extension checks `examinee` on activity, issues a student grant, returns `{token, wss_url}`. Client constructs the `Room` (VP8 + simulcast + Dynacast), calls `room.connect(wss, token, { autoSubscribe: false })`, then `setCameraEnabled(true)`, `setMicrophoneEnabled(true)`, and `setScreenShareEnabled(true)`. The browser prompts for camera / microphone access once and for screen-share target on every `setScreenShareEnabled(true)` call. LiveKit fires `participant_joined` and one `track_published` per source.
-
-3. **Invigilator join.** Staff client calls the same token endpoint; extension issues an invigilator grant. Client connects with `autoSubscribe: false`, registers the `RoomEvent` listeners, and renders the tile grid from `TrackPublication` metadata. No video bytes flow.
+3. **Invigilator join.** Staff picks a room from the rooms list and the client calls that room's token endpoint; extension issues an invigilator grant. Client connects with `autoSubscribe: false`, registers the `RoomEvent` listeners, and renders the tile grid from `TrackPublication` metadata. No video bytes flow. An invigilator monitoring multiple groups maintains one `Room` connection per group.
 
 4. **Spot-check.** Invigilator clicks a tile and chooses which publications to view (camera, screen, microphone, or any combination) → `setSubscribed(true)` + `setVideoQuality(HIGH)` on each chosen publication. Dynacast resumes the HIGH layer on that publisher only; first frame arrives within the latency budget. Clicking away → `setSubscribed(false)` and the SFU re-pauses the layers.
 
@@ -145,11 +154,11 @@ Per-room state is an in-memory map keyed on the LiveKit room name; the follow-up
 
 6. **Student finish.** Closing the exam tab fires `track_unpublished` then `participant_left`.
 
-7. **Exam stop.** Staff clicks **Stop proctoring** → `DELETE /v1/proctoring/rooms/activity-<id>` → `RoomServiceClient.DeleteRoom`. LiveKit disconnects remaining participants and fires `room_finished`. Extension closes the session record.
+7. **Exam stop.** Staff clicks **Stop proctoring**; the client calls `DELETE /v1/proctoring/rooms/:name` for every room on the activity. Extension calls `RoomServiceClient.DeleteRoom` for each. LiveKit disconnects remaining participants and fires `room_finished` per room. Extension drops each room's membership record.
 
 ## Implementation Notes
 
-- **Room naming.** `activity-<id>` is enumerable; the canonical room name must include a 16-hex-char random suffix stored alongside the activity, and the token endpoint must be rate-limited per user per room.
+- **Token endpoint rate limiting.** The `POST /v1/proctoring/rooms/:name/tokens` endpoint should be rate-limited per user per room to contain probing and accidental client loops. Room names are staff-chosen so guessability is a deployment concern, not an API one — but membership enforcement at the extension already prevents a correctly-guessed name from yielding a usable token.
 - **Thumbnail grid (stretch).** Subscribing to every student's camera at `VideoQuality.LOW` is trivially implementable but crosses 80 Mbps downlink at 1,000 students; adding screen at LOW doubles it. If either is included, the invigilator client must enforce a hard cap architecturally via a fixed-size subscription pool (≤ 25 camera thumbnails, ≤ 6 screen thumbnails) — not as a UI hint.
 - **Screen share re-prompt on page refresh.** Browser screen-share permission is per-capture and not remembered across page loads. On `Room` construction the client should check whether it previously had a screen track active (persisted to `sessionStorage` when `setScreenShareEnabled(true)` succeeded) and, if so, re-invoke `setScreenShareEnabled(true)` to surface the picker again. WebSocket-only reconnects are handled transparently by the SDK because the underlying `MediaStreamTrack` is preserved.
 - **Secret handling.** The LiveKit API secret must never be logged, returned by any diagnostic endpoint, or committed as YAML outside development. Source it from environment or a secret manager.
@@ -160,7 +169,7 @@ Per-room state is an in-memory map keyed on the LiveKit room name; the follow-up
 
 2. **Mid-session permission revocation.** If a staff user's `coordinator` relation is revoked mid-exam, their SFU token remains valid until its ≤ 10 min TTL. Closing this gap requires `UpdateParticipant` or `RemoveParticipant` keyed on a NATS event from `core`'s authz layer. **Deferred**; the TTL window is an accepted gap here.
 
-3. **Metadata visibility between students.** `TrackPublication` and participant events fan out to every room member regardless of `CanSubscribe`, so every student learns the identities and display names of every other student in the exam. Mitigations — per-student rooms with server-side aggregation, or client-side filtering of non-self events — should be evaluated in the proctoring extension RFD. Accepted privacy trade-off for now.
+3. **Metadata visibility within a room.** `TrackPublication` and participant events fan out to every room member regardless of `CanSubscribe`, so every student in a given room learns the identities and display names of the other students in that room. Splitting cohorts into smaller rooms (above) bounds the exposure to group size rather than cohort size. Further mitigations — client-side filtering of non-self events — belong in the proctoring extension RFD. Accepted privacy trade-off for now.
 
 4. **`coordinator from parent` escalation.** Any course coordinator — including TAs — inherits invigilator access under the interim relation reuse. Deployments should audit coordinator grants on examination activities until the dedicated `can_proctor` relation lands.
 
