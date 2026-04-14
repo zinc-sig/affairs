@@ -13,7 +13,7 @@ Scope is narrow: media transport, token issuance, and a full lifecycle from exam
 
 ## Background
 
-Exams run in a supervised lab. Each student publishes a **camera**, a **microphone**, and their **exam-machine screen** continuously; an invigilator spot-checks one student at a time and chooses which of those tracks to view. Pushing every track to every invigilator would saturate both directions of the network at 1,000-student scale, so we need a media topology where idle publications cost essentially nothing and bandwidth scales only with the number of active inspections.
+Exams run in a supervised lab on a closed exam intranet that has no route to the public internet during the exam window. Each student publishes a **camera**, a **microphone**, and their **exam-machine screen** continuously; an invigilator spot-checks one student at a time and chooses which of those tracks to view. Pushing every track to every invigilator would saturate both directions of the network at 1,000-student scale, so we need a media topology where idle publications cost essentially nothing and bandwidth scales only with the number of active inspections. The intranet constraint also forces **self-hosting**: LiveKit Cloud is not reachable during exams and is not a candidate.
 
 LiveKit is an open-source WebRTC SFU that provides the three primitives this requires:
 
@@ -114,11 +114,9 @@ Screen is published as a separate track with `Track.Source.ScreenShare` using `r
 | LOW    | 854 × 480   | ~200 kbps | ~250 kbps |
 | HIGH   | 1280 × 720  | ~2.0 Mbps | ~2.5 Mbps |
 
-Resolution is capped at 720p regardless of the student's display size — higher resolutions are wasted on invigilation and balloon the per-resume keyframe burst. Two layers are sufficient; there is no equivalent of the 180p camera thumbnail because even a 480p screen thumbnail remains legible enough to tell whether a student is on a fake window.
+Resolution is capped at 720p regardless of the student's display size — higher resolutions are wasted on invigilation and balloon the per-resume keyframe burst.
 
-**The screen-picker UX cannot be server-enforced.** `getDisplayMedia` always shows a native browser picker with Entire Screen / Window / Tab options, and the student can pick any of them, or Cancel. Passing `displaySurface: 'monitor'` is a *preference hint* honoured strictly by Firefox but not by Chromium, so a malicious student can always share a benign window. This is an inherent constraint of the browser API; detecting it (e.g. inferring window size from the MediaStreamTrack's settings) and deciding what to do about it is a proctoring-policy question that belongs in the follow-up RFD. What *is* in scope here is that the extension can observe the absence or stopping of a screen track via `track_published` / `track_unpublished` webhooks and log it.
-
-macOS requires a one-time OS-level Screen Recording permission per browser in System Settings; Chromium and Safari both surface a prompt the first time `getDisplayMedia` is called, and the student must grant it before entering the exam room. This belongs in pre-exam onboarding, not in the exam flow itself. Browser screen-share permission is also not remembered across page refreshes — if a student refreshes mid-exam the client must call `setScreenShareEnabled(true)` again to reissue the picker; WebSocket-only reconnects handle themselves because the underlying `MediaStreamTrack` survives.
+`getDisplayMedia` shows a native browser picker each time `setScreenShareEnabled(true)` is called; enforcing *which* surface the student picks is out of scope. Exams are onsite, invigilators are physically present, and the follow-up RFD will add session recording — screen-faking defences are not worth engineering against here. macOS requires a one-time Screen Recording permission per browser in System Settings, which belongs in pre-exam onboarding rather than the exam flow.
 
 ### Webhook events
 
@@ -160,15 +158,14 @@ Per-room state is an in-memory map keyed on the LiveKit room name; the follow-up
 
 1. **Load test as sign-off blocker.** 1,000-participant publish-only topology with aggressive Dynacast has not been validated for ZINC. A `livekit-cli load-test` at 500 / 750 / 1,000 participants must measure SFU CPU + memory, connection-establishment latency, and TURN relay cost before this RFD moves to `published`.
 
-2. **Self-hosted vs. LiveKit Cloud.** Self-hosted is assumed for data sovereignty; a cost/compliance comparison should precede the production decision.
+2. **Mid-session permission revocation.** If a staff user's `coordinator` relation is revoked mid-exam, their SFU token remains valid until its ≤ 10 min TTL. Closing this gap requires `UpdateParticipant` or `RemoveParticipant` keyed on a NATS event from `core`'s authz layer. **Deferred**; the TTL window is an accepted gap here.
 
-3. **Mid-session permission revocation.** If a staff user's `coordinator` relation is revoked mid-exam, their SFU token remains valid until its ≤ 10 min TTL. Closing this gap requires `UpdateParticipant` or `RemoveParticipant` keyed on a NATS event from `core`'s authz layer. **Deferred**; the TTL window is an accepted gap here.
+3. **Metadata visibility between students.** `TrackPublication` and participant events fan out to every room member regardless of `CanSubscribe`, so every student learns the identities and display names of every other student in the exam. Mitigations — per-student rooms with server-side aggregation, or client-side filtering of non-self events — should be evaluated in the proctoring extension RFD. Accepted privacy trade-off for now.
 
-4. **Metadata visibility between students.** `TrackPublication` and participant events fan out to every room member regardless of `CanSubscribe`, so every student learns the identities and display names of every other student in the exam. Mitigations — per-student rooms with server-side aggregation, or client-side filtering of non-self events — should be evaluated in the proctoring extension RFD. Accepted privacy trade-off for now.
+4. **`coordinator from parent` escalation.** Any course coordinator — including TAs — inherits invigilator access under the interim relation reuse. Deployments should audit coordinator grants on examination activities until the dedicated `can_proctor` relation lands.
 
-5. **`coordinator from parent` escalation.** Any course coordinator — including TAs — inherits invigilator access under the interim relation reuse. Deployments should audit coordinator grants on examination activities until the dedicated `can_proctor` relation lands.
+5. **Reconnect under long exams.** NAT binding timeouts (5–15 min) and TURN credential rotation can silently drop students during a 2–3 hour exam. The LiveKit SDK reconnects transparently in most cases, but a heartbeat strategy and a grace-period alerting policy belong in the proctoring extension RFD.
 
-6. **Reconnect under long exams.** NAT binding timeouts (5–15 min) and TURN credential rotation can silently drop students during a 2–3 hour exam. The LiveKit SDK reconnects transparently in most cases, but a heartbeat strategy and a grace-period alerting policy belong in the proctoring extension RFD.
 
 ## References
 
