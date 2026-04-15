@@ -34,7 +34,6 @@ LiveKit is an open-source WebRTC SFU that provides the three primitives this req
 ### Deferred to the proctoring extension RFD
 
 - Automatic room create/destroy tied to `submission_collection.start_at`/`stop_at` (Temporal workflow per [RFD 0010](../0010/README.md)).
-- A dedicated `can_proctor` relation in OpenFGA. For now this RFD reuses `coordinator from parent` on `activity`.
 - Egress recording, invigilator-to-student audio warnings, multi-room sharding, `proctoring.*` NATS events, disconnect grace-period policy, attendance integration.
 
 ## Architecture
@@ -50,27 +49,48 @@ proctoring extension ──── NATS ──── core         LiveKit SFU
                                                  (self-hosted, VP8 simulcast + Dynacast)
 ```
 
+### Authorization model
+
+A proctoring room is its own first-class object in OpenFGA with its parent pointing at the activity the room invigilates. Neither the exam document (`examination`) nor the submission collection (`collection`) is the right anchor: `examinee` on an examination means "can read the questions," not "is in this exam session"; a single proctoring room can host students from multiple collections (typical when the same physical lab is invigilated jointly, with e.g. SEN students submitting on a later collection). Reusing either would force incorrect semantics.
+
+```
+type proctoring_room
+  relations
+    define parent: [activity]
+    define student: [user]
+    define can_proctor: can_edit from parent
+```
+
+- `student` is an explicit per-user relation written by the extension when a room is created (one tuple per `participant_id`). It is the single source of truth for "is this user in this proctoring room"; the API layer does not maintain a parallel in-memory allowlist.
+- `can_proctor` inherits from `can_edit` on the parent activity, so coordinators and administrators of the course automatically have invigilator access. This replaces the earlier interim plan of reusing `coordinator from parent on activity` and removes the dependency on a future model change — the relation lands now.
+
 ### HTTP routes
 
-| Method | Path                                                | Authorization                                     |
-|--------|-----------------------------------------------------|---------------------------------------------------|
-| POST   | `/v1/proctoring/rooms`                              | `can_edit` on activity                            |
-| GET    | `/v1/proctoring/rooms?activity_id=<id>`             | `examinee` or `can_edit` on activity              |
-| DELETE | `/v1/proctoring/rooms/:name`                        | `can_edit` on room's parent activity              |
-| POST   | `/v1/proctoring/rooms/:name/tokens`                 | room membership (student) or `can_edit` (staff)   |
-| POST   | `/v1/proctoring/webhooks/livekit`                   | LiveKit-signed (`Authorization` JWT, no session)  |
+| Method | Path                                                | Authorization                                                              |
+|--------|-----------------------------------------------------|----------------------------------------------------------------------------|
+| POST   | `/v1/proctoring/rooms`                              | `can_edit` on activity                                                     |
+| GET    | `/v1/proctoring/rooms?activity_id=<id>`             | `can_read` on activity (list result filtered to rooms the caller can join) |
+| DELETE | `/v1/proctoring/rooms/:name`                        | `can_proctor` on proctoring\_room                                          |
+| POST   | `/v1/proctoring/rooms/:name/tokens`                 | `student` on proctoring\_room (examinee) OR `can_proctor` on proctoring\_room (invigilator) |
+| POST   | `/v1/proctoring/webhooks/livekit`                   | LiveKit-signed (`Authorization` JWT, no session)                           |
+
+The GET endpoint returns room rows filtered to those the caller can actually join: a staff user with `can_edit` on the activity sees every room on that activity; a student sees only rooms where they hold `student` on `proctoring_room:<name>`. The broad `can_read` gate keeps an enrolled but unassigned student from triggering a 403 — they see an empty list instead.
+
+The token endpoint dispatches on the caller's relation: `student` grants a student token (publish-only), `can_proctor` grants an invigilator token (subscribe-only). A user matching both (rare — a coordinator who is also explicitly added as an examinee) receives the invigilator grant.
 
 All routes except the webhook endpoint are mounted behind `RequireAuthenticated`. The webhook endpoint is verified using `webhook.ReceiveWebhookEvent` from `github.com/livekit/protocol/webhook`; the existing ghost-pipeline webhook in `core` (query-string token, no cryptographic verification) is explicitly not a template.
 
 ### Rooms and membership
 
-One activity maps to **many rooms**, so large cohorts can be split into separate invigilation groups (e.g. by course section, physical lab, or staff-level grouping). The extension persists `(room_name, activity_id, participant_identities[])` tuples in-memory for each live room; the follow-up RFD will back this with a `proctoring_sessions` table.
+One activity maps to **many rooms**, so large cohorts can be split into separate invigilation groups (e.g. by course section, physical lab, or staff-level grouping). Conversely, one room can host students from **multiple collections** (typical when the same physical lab runs standard and SEN collections side by side). Membership is therefore per-student, not per-collection.
 
-Room creation takes an explicit name chosen by the staff caller (`POST /v1/proctoring/rooms` with body `{name, activity_id, participant_ids}`). The name is forwarded verbatim to `RoomServiceClient.CreateRoom` and must be unique across active rooms; collisions are rejected. `participant_ids` is the list of student user IDs allowed into this specific room.
+Per-room state consists of (a) OpenFGA tuples — one `parent@proctoring_room:<name>#activity:<id>` plus one `student@proctoring_room:<name>#user:<pid>` per participant — which are the authoritative record of membership, and (b) a lightweight cache sidecar holding `{activity_id, created_at}` keyed by room name, which backs the activity-scoped list endpoint without a full OpenFGA walk. The follow-up proctoring extension RFD will add a `proctoring_sessions` Postgres table alongside session telemetry.
 
-Room-listing (`GET /v1/proctoring/rooms?activity_id=…`) returns the rooms the caller can join: for a staff user with `can_edit`, every room on the activity; for a student with `examinee`, only the rooms whose `participant_ids` contains their identity (normally exactly one). This is the student client's discovery step before requesting a token.
+Room creation takes an explicit name chosen by the staff caller (`POST /v1/proctoring/rooms` with body `{name, activity_id, participant_ids}`). The name is forwarded verbatim to `RoomServiceClient.CreateRoom` and must be unique across active rooms; collisions are rejected. `participant_ids` is the list of student user IDs allowed into this specific room; the extension writes one `student` tuple per id into OpenFGA before calling LiveKit.
 
-Token issuance authorization therefore has two layers for students: they must hold `examinee` on the parent activity (unchanged), **and** their identity must appear in the target room's `participant_ids`. Staff authorization stays at `can_edit` on the parent activity.
+Room-listing (`GET /v1/proctoring/rooms?activity_id=…`) returns the rooms the caller can join. A staff user with `can_edit` on the activity sees every room on it. A student sees only rooms where they hold `student` on `proctoring_room:<name>` — the extension enforces this by checking `student` per listed room (bounded to dozens per activity under the RFD's cohort-split guidance). This is the student client's discovery step before requesting a token.
+
+Token issuance dispatches on relation: the extension checks `can_proctor on proctoring_room:<name>` for the invigilator path and `student on proctoring_room:<name>` for the examinee path (preferring invigilator if both hold). No separate activity-level gate is needed because `can_proctor` resolves to `can_edit from parent activity` by the model.
 
 ### Token grants
 
@@ -78,6 +98,7 @@ Tokens are short-lived (≤ 10 min) JWTs signed by the extension and fetched cli
 
 | Field                  | Student                | Invigilator     |
 |------------------------|------------------------|-----------------|
+| `Identity`             | `user:<id>`            | `user:<id>`     |
 | `RoomJoin`             | true                   | true            |
 | `Room`                 | `<room name>`          | `<room name>`   |
 | `CanPublish`           | **true**               | false           |
@@ -85,6 +106,8 @@ Tokens are short-lived (≤ 10 min) JWTs signed by the extension and fetched cli
 | `CanPublishData`       | false                  | false           |
 | `CanPublishSources`    | `[camera, microphone, screen_share]` | (n/a) |
 | `CanUpdateOwnMetadata` | false                  | false           |
+
+`Identity` matches the OpenFGA user tuple format used elsewhere in the platform (`user:<id>`), so webhook payloads that echo `participant.identity` can be parsed back to the ZINC user id by stripping the `user:` prefix. API request and response bodies continue to use bare integer user ids (e.g. `participant_ids: [1, 2, 3]`); the prefix is applied only at the LiveKit SDK boundary.
 
 `CanSubscribe: false` is the **hard enforcement boundary** — the SFU rejects any subscribe attempt from an identity without the grant, regardless of client behaviour. `autoSubscribe: false` on the student client is a defensive supplement only. `CanUpdateOwnMetadata: false` blocks students from forging the publication metadata the invigilator grid reads. `screen_share_audio` is deliberately omitted from the student's `CanPublishSources`: system audio would leak OS notifications, ambient audio from other apps, and generally creates privacy exposure with no invigilation value the microphone doesn't already cover.
 
@@ -142,9 +165,9 @@ LiveKit retries on delivery failure, so handlers must be idempotent and dedupe o
 
 ## End-to-End Lifecycle
 
-1. **Exam start.** Staff opens `/activities/:id/invigilate` in the staff app, configures one or more invigilation groups (name + participant set per group) and clicks **Start proctoring**. For each group, the client calls `POST /v1/proctoring/rooms` with `{name, activity_id, participant_ids}`. Extension checks `can_edit` on the activity, calls `RoomServiceClient.CreateRoom(name, EmptyTimeout=600)`, records the membership, returns `{room, wss_url}`.
+1. **Exam start.** Staff opens `/activities/:id/invigilate` in the staff app, configures one or more invigilation groups (name + participant set per group) and clicks **Start proctoring**. For each group, the client calls `POST /v1/proctoring/rooms` with `{name, activity_id, participant_ids}`. Extension checks `can_edit` on the activity, writes the OpenFGA `parent` and per-student tuples, writes the cache sidecar, calls `RoomServiceClient.CreateRoom(name, EmptyTimeout=600)`, and returns `{room, wss_url}`.
 
-2. **Student join.** Student opens `/activities/:id/proctored` in the student app. Client calls `GET /v1/proctoring/rooms?activity_id=<id>` to resolve the student's assigned room, then `POST /v1/proctoring/rooms/:name/tokens`. Extension verifies the caller's identity is in the room's `participant_ids`, issues a student grant, returns `{token, wss_url}`. Client constructs the `Room` (VP8 + simulcast + Dynacast), calls `room.connect(wss, token, { autoSubscribe: false })`, then `setCameraEnabled(true)`, `setMicrophoneEnabled(true)`, and `setScreenShareEnabled(true)`. The browser prompts for camera / microphone access once and for screen-share target on every `setScreenShareEnabled(true)` call. LiveKit fires `participant_joined` and one `track_published` per source.
+2. **Student join.** Student opens `/activities/:id/proctored` in the student app. Client calls `GET /v1/proctoring/rooms?activity_id=<id>` to resolve the student's assigned room, then `POST /v1/proctoring/rooms/:name/tokens`. Extension checks `student on proctoring_room:<name>`, issues a student grant with `Identity = "user:<id>"`, returns `{token, wss_url}`. Client constructs the `Room` (VP8 + simulcast + Dynacast), calls `room.connect(wss, token, { autoSubscribe: false })`, then `setCameraEnabled(true)`, `setMicrophoneEnabled(true)`, and `setScreenShareEnabled(true)`. The browser prompts for camera / microphone access once and for screen-share target on every `setScreenShareEnabled(true)` call. LiveKit fires `participant_joined` and one `track_published` per source.
 
 3. **Invigilator join.** Staff picks a room from the rooms list and the client calls that room's token endpoint; extension issues an invigilator grant. Client connects with `autoSubscribe: false`, registers the `RoomEvent` listeners, and renders the tile grid from `TrackPublication` metadata. No video bytes flow. An invigilator monitoring multiple groups maintains one `Room` connection per group.
 
@@ -154,7 +177,7 @@ LiveKit retries on delivery failure, so handlers must be idempotent and dedupe o
 
 6. **Student finish.** Closing the exam tab fires `track_unpublished` then `participant_left`.
 
-7. **Exam stop.** Staff clicks **Stop proctoring**; the client calls `DELETE /v1/proctoring/rooms/:name` for every room on the activity. Extension calls `RoomServiceClient.DeleteRoom` for each. LiveKit disconnects remaining participants and fires `room_finished` per room. Extension drops each room's membership record.
+7. **Exam stop.** Staff clicks **Stop proctoring**; the client calls `DELETE /v1/proctoring/rooms/:name` for every room on the activity. Extension calls `RoomServiceClient.DeleteRoom` for each, removes the cache sidecar, and revokes the room's OpenFGA tuples (`parent` plus each `student`). LiveKit disconnects remaining participants and fires `room_finished` per room.
 
 ## Implementation Notes
 
@@ -171,7 +194,7 @@ LiveKit retries on delivery failure, so handlers must be idempotent and dedupe o
 
 3. **Metadata visibility within a room.** `TrackPublication` and participant events fan out to every room member regardless of `CanSubscribe`, so every student in a given room learns the identities and display names of the other students in that room. Splitting cohorts into smaller rooms (above) bounds the exposure to group size rather than cohort size. Further mitigations — client-side filtering of non-self events — belong in the proctoring extension RFD. Accepted privacy trade-off for now.
 
-4. **`coordinator from parent` escalation.** Any course coordinator — including TAs — inherits invigilator access under the interim relation reuse. Deployments should audit coordinator grants on examination activities until the dedicated `can_proctor` relation lands.
+4. **Coordinator inherits invigilator.** `can_proctor` resolves to `can_edit from parent` on activity, which includes every coordinator — TAs included — via the course's coordinator relation. This is by design (invigilation is a normal coordinator task), but deployments should audit coordinator grants on examination activities. A narrower invigilator role — e.g. a `proctor` relation on `course` distinct from `coordinator` — is out of scope here and belongs in the follow-up RFD if it is needed.
 
 5. **Reconnect under long exams.** NAT binding timeouts (5–15 min) and TURN credential rotation can silently drop students during a 2–3 hour exam. The LiveKit SDK reconnects transparently in most cases, but a heartbeat strategy and a grace-period alerting policy belong in the proctoring extension RFD.
 
