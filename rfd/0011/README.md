@@ -186,17 +186,13 @@ LiveKit retries on delivery failure, so handlers must be idempotent and dedupe o
 - **Screen share re-prompt on page refresh.** Browser screen-share permission is per-capture and not remembered across page loads. On `Room` construction the client should check whether it previously had a screen track active (persisted to `sessionStorage` when `setScreenShareEnabled(true)` succeeded) and, if so, re-invoke `setScreenShareEnabled(true)` to surface the picker again. WebSocket-only reconnects are handled transparently by the SDK because the underlying `MediaStreamTrack` is preserved.
 - **Secret handling.** The LiveKit API secret must never be logged, returned by any diagnostic endpoint, or committed as YAML outside development. Source it from environment or a secret manager.
 
-## Open Questions
+## Known Limitations and Accepted Trade-offs
 
-1. **Load test as sign-off blocker.** 1,000-participant publish-only topology with aggressive Dynacast has not been validated for ZINC. A `livekit-cli load-test` at 500 / 750 / 1,000 participants must measure SFU CPU + memory, connection-establishment latency, and TURN relay cost before this RFD moves to `published`.
-
-2. **Mid-session permission revocation.** If a staff user's `coordinator` relation is revoked mid-exam, their SFU token remains valid until its ≤ 10 min TTL. Closing this gap requires `UpdateParticipant` or `RemoveParticipant` keyed on a NATS event from `core`'s authz layer. **Deferred**; the TTL window is an accepted gap here.
-
-3. **Metadata visibility within a room.** `TrackPublication` and participant events fan out to every room member regardless of `CanSubscribe`, so every student in a given room learns the identities and display names of the other students in that room. Splitting cohorts into smaller rooms (above) bounds the exposure to group size rather than cohort size. Further mitigations — client-side filtering of non-self events — belong in the proctoring extension RFD. Accepted privacy trade-off for now.
-
-4. **Coordinator inherits invigilator.** `can_proctor` resolves to `can_edit from parent` on activity, which includes every coordinator — TAs included — via the course's coordinator relation. This is by design (invigilation is a normal coordinator task), but deployments should audit coordinator grants on examination activities. A narrower invigilator role — e.g. a `proctor` relation on `course` distinct from `coordinator` — is out of scope here and belongs in the follow-up RFD if it is needed.
-
-5. **Reconnect under long exams.** NAT binding timeouts (5–15 min) and TURN credential rotation can silently drop students during a 2–3 hour exam. The LiveKit SDK reconnects transparently in most cases, but a heartbeat strategy and a grace-period alerting policy belong in the proctoring extension RFD.
+- **Load test required before `published`.** 1,000-participant publish-only topology with aggressive Dynacast has not been validated for ZINC. A `livekit-cli load-test` at 500 / 750 / 1,000 participants measuring SFU CPU + memory, connection-establishment latency, and TURN relay cost is a prerequisite before this RFD moves to `published`.
+- **Mid-session permission revocation has a ≤ 10 min TTL window.** If a staff user's `coordinator` relation is revoked mid-exam, their SFU token remains valid until expiry. Closing this gap requires `UpdateParticipant` or `RemoveParticipant` keyed on a NATS event from `core`'s authz layer; this belongs in the proctoring extension RFD. The TTL window is accepted here.
+- **Students see each other's identities within a room.** `TrackPublication` and participant events fan out to every room member regardless of `CanSubscribe`. Splitting cohorts into smaller rooms bounds the exposure to group size. Further mitigations (client-side filtering of non-self events) belong in the proctoring extension RFD.
+- **All course coordinators inherit invigilator access.** `can_proctor` resolves to `can_edit from parent` on the activity, which includes TAs with coordinator grants. This is by design — invigilation is a normal coordinator responsibility. A narrower `proctor` relation distinct from `coordinator` can be introduced in the proctoring extension RFD if needed.
+- **Long-exam reconnects rely on LiveKit SDK built-ins.** NAT binding timeouts (5–15 min) and TURN credential rotation can silently drop students during a 2–3 hour exam. The SDK reconnects transparently in most cases. A heartbeat strategy and grace-period alerting policy belong in the proctoring extension RFD.
 
 
 ## References
