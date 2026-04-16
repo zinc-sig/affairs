@@ -1,7 +1,7 @@
 ---
 authors: Thomas Li
 state: prediscussion
-discussion:
+discussion: "[#11](https://github.com/zinc-sig/affairs/pull/11)"
 labels: platform, media, infrastructure, interop
 ---
 
