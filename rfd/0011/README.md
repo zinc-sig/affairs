@@ -199,6 +199,22 @@ LiveKit retries on delivery failure, so handlers must be idempotent and dedupe o
 - **Long-exam reconnects rely on LiveKit SDK built-ins.** NAT binding timeouts (5–15 min) and TURN credential rotation can silently drop students during a 2–3 hour exam. The SDK reconnects transparently in most cases. A heartbeat strategy and grace-period alerting policy belong in the proctoring extension RFD.
 
 
+## Glossary
+
+| Term | Definition |
+|------|------------|
+| **SFU** | Selective Forwarding Unit — a media server that receives tracks from publishers and forwards them individually to subscribers, without mixing. LiveKit is an SFU. |
+| **WebRTC** | Web Real-Time Communication — the browser API and protocol suite underlying peer-to-peer and SFU-relayed audio/video. |
+| **Track** | A single media stream (one camera, one microphone, or one screen share). Each track has a `Source` (`Camera`, `Microphone`, `ScreenShare`). |
+| **Publication** | A track that a participant has made available in a room. Other participants see `TrackPublication` metadata even without subscribing. |
+| **Subscription** | An explicit request by a participant to receive media bytes from a publication. No bytes flow without one. |
+| **Simulcast** | Publishing the same track at multiple resolutions (e.g. 180p / 360p / 720p) simultaneously so subscribers can pick the quality they need. |
+| **Dynacast** | LiveKit feature that pauses simulcast layers at the publisher when no subscriber is consuming them, saving CPU and bandwidth. |
+| **VP8** | A video codec. Used here because Dynacast can pause individual VP8 simulcast layers; SVC codecs (VP9/AV1) can only pause whole streams. |
+| **ICE / TURN** | Interactive Connectivity Establishment / Traversal Using Relays around NAT — protocols for establishing peer connections through firewalls and NATs. TURN relays traffic when direct connectivity fails. |
+| **Egress** | LiveKit's server-side recording/streaming service. Out of scope for this RFD. |
+| **`VideoGrant`** | The permission object embedded in a LiveKit access token controlling what a participant can do (`CanPublish`, `CanSubscribe`, etc.). |
+
 ## References
 
 - [RFD 0009 — ZINC Extension System](../0009/README.md)
