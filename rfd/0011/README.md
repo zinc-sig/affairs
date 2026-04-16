@@ -34,7 +34,11 @@ LiveKit is an open-source WebRTC SFU that provides the three primitives this req
 ### Deferred to the proctoring extension RFD
 
 - Automatic room create/destroy tied to `submission_collection.start_at`/`stop_at` (Temporal workflow per [RFD 0010](../0010/README.md)).
-- Egress recording, invigilator-to-student audio warnings, multi-room sharding, `proctoring.*` NATS events, disconnect grace-period policy, attendance integration.
+- Local recording, server-side Egress recording, invigilator-to-student audio warnings, multi-room sharding, `proctoring.*` NATS events, disconnect grace-period policy, attendance integration.
+
+### Local recording (out of scope, feasibility note)
+
+Client-side recording of the student's own webcam and screen tracks is feasible independently of LiveKit. The browser's `MediaRecorder` API can capture the same `MediaStreamTrack` objects that LiveKit publishes, writing chunks to IndexedDB or the Origin Private File System during the exam and uploading the resulting file to object storage afterwards. This runs entirely in the student's browser and does not touch the SFU — it works whether or not an invigilator is subscribed, and adds no server-side bandwidth. Design and implementation are out of scope for this RFD.
 
 ## Architecture
 
