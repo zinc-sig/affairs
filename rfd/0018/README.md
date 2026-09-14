@@ -12,10 +12,10 @@ An activity today carries one type, `kind`, with the values `assignment` and
 activity row in the core schema: one key per extension, each with an on/off
 switch and the activity-level policy that extension applies, resolved to
 constants when no decision has been recorded. Exam and assignment become
-presets over the envelope rather than a stored type. A readiness read asks
-every extension whether the activity can be held as configured and reports
-the answer per extension, including undecided keys and extensions that are
-not running. A small set of rules bounds what the core may know about an
+presets over the envelope rather than a stored type. A health read asks whether the
+extensions the activity requires are running and reports the answer per
+extension; whether the activity is configured correctly stays the console's
+setup checklist on the activity home page. A small set of rules bounds what the core may know about an
 extension so that centralizing the settings does not centralize extension
 logic.
 
@@ -115,17 +115,17 @@ are; the envelope holds decisions staff make about the activity.
 refuses every new use of the capability by anyone, staff included; what
 already exists stays readable.
 
-**Readiness reports, never gates.** One core route fans out to every
-registered extension and composes a per-extension verdict with named checks,
-including undecided keys and extensions that did not answer. Any status
-transition stays allowed.
+**Health reports, never gates.** One core route asks the extensions an
+activity requires whether they are running and reports a per-extension health
+verdict; configuration validity stays the console's setup checklist. Any
+status transition stays allowed.
 
 **Core stores bytes; extensions define meaning.** Six rules bound what the
 core may know: it validates shape through validators the extensions author,
 evaluates cross-key preconditions that the dependent extension declares,
 never reads extension state or calls an extension on the write path, publishes
 one notification that no extension is required to consume, derives nothing
-but declared projections, and asks extensions only through readiness.
+but declared projections, and asks extensions only through the health read.
 
 **Exam and assignment are presets.** The console and the command-line
 client write a named envelope at creation. The backend stores no type.
@@ -229,9 +229,9 @@ included; examination refuses authoring as well as serving and pauses
 materialization; sandbox refuses the linter and staff test runs as well as
 student attempts, and creates no pool; environment off means grading and
 sandbox run on the platform default image and the template binding is
-ignored; proctoring refuses sessions. An off key is not applicable to
-readiness, so nothing vouches for the extension, and anything usable under
-off would be unverified; a partial off also leaves the intent unclear.
+ignored; proctoring refuses sessions. An off key is not required, so the
+health read does not ask its extension and nothing vouches for it, and
+anything usable under off would be unverified; a partial off also leaves the intent unclear.
 Enabling is the explicit first step before authoring or running, and the
 exam preset does it at creation. What exists stays readable under off
 (documents, runs, attempts, recordings): the switch governs new use, never
@@ -250,7 +250,7 @@ unchanged:
 - **A binding to something an extension has built** stays in that
   extension's table with a foreign key, because JSONB cannot hold one: the
   pipeline config id, the environment template id, the examination
-  document. Readiness reports whether each binding exists.
+  document. The setup checklist reports whether each binding exists.
 - **An extension's specification of a resource it provisions is an
   artefact.** An environment template (an image spec), a pipeline config (a
   grading run spec), an examination document (a paper), and a sandbox pool
@@ -318,8 +318,8 @@ extensions. Six rules bound both.
 1. **Core stores bytes and validates shape; the owning extension defines
    meaning.** Each key's file holds its struct, validator, and constant.
    The core calls them without reading fields. The only field the core
-   understands on every key is `enabled`, because readiness needs a
-   not-applicable status. A locked value is a constraint the key's
+   understands on every key is `enabled`, because the health read asks
+   only the extensions the activity requires. A locked value is a constraint the key's
    validator declares, not a core rule.
 2. **Cross-key preconditions are declared by the dependent key and
    evaluated generically over resolved values.** Proctoring's file declares
@@ -333,7 +333,7 @@ extensions. Six rules bound both.
    the envelope alone. No extension views, no precheck call, no liveness
    dependency. A transition that is unsafe because of extension state is
    guarded by the client that can see that state (the console's live guard
-   and confirm, a command-line warning) and reported by readiness
+   and confirm, a command-line warning) and reported by the setup checklist
    afterwards, except where the owning extension applies a guard of its own
    at effect time. That is safer than the current code, where a type change has no
    guard.
@@ -353,12 +353,12 @@ extensions. Six rules bound both.
    serve the coursework read with `paper` and read the report's default
    visibility when it creates a collection, both reads of core data decoded
    by the package that defines the key.
-6. **Readiness is the only place the core asks extensions anything, and it
-   is read-only, bounded, and optional.** One fan-out per request with a
-   timeout; an extension that does not answer degrades to unavailable.
+6. **The health read is the only place the core asks extensions anything,
+   and it is read-only, bounded, and optional.** One fan-out per request with
+   a timeout; an extension that does not answer is reported unreachable.
 
 What the core embeds per extension, in total: a schema it calls but does not
-read, declared predicates, declared projections, and a readiness topic. What
+read, declared predicates, declared projections, and a health topic. What
 it never embeds: field semantics, extension tables or views, synchronous
 calls on write, a subscriber it depends on, or a write into an extension's
 authorization namespace.
@@ -481,7 +481,7 @@ cannot give.
 
 Writes are accepted whenever they are valid against the envelope; they
 record intent. The owning extension reacts to the notification or converges
-by its ensure, and anything it cannot reconcile becomes a red readiness check
+by its ensure, and anything it cannot reconcile becomes a red setup check
 with a precise message, for example "collection Midterm A: due must be at or
 after stop for a hard cutoff". Existing collection-write validators keep
 refusing new invalid windows.
@@ -494,7 +494,7 @@ refusing new invalid windows.
 | pipeline on to off | in-flight runs finish; objective components ungrade until re-enabled; manual-only formulas still score |
 | sandbox on to off | attempts, the linter, and staff test runs are refused; an existing pool idles out |
 | environment on to off | the next run uses the platform image; a live pool swaps image on its next generation |
-| proctoring on to off | immediate at the content gates; the console confirm quotes the live-session count; readiness records an off written while sessions were live |
+| proctoring on to off | immediate at the content gates; the console confirm quotes the live-session count; the setup checklist records an off written while sessions were live |
 | proctoring policy change | propagated to active sessions only through the explicit action route; device proof never propagates |
 | report selection change | every of-record read changes at once, since selection is a query parameter evaluated at read time; `best` is locked until the seam is repointed |
 
@@ -512,7 +512,7 @@ owning extension at effect time, keeping the third rule intact:
   of proctoring's table and the database grant it needs), so an off is
   immediate. The hazard, serving the paper to enrolled students the
   invigilators never admitted, is a deliberate staff action guarded by the
-  console confirm and a command-line warning, and recorded by readiness. An
+  console confirm and a command-line warning, and recorded by the setup checklist. An
   enforced copy that lags intent was rejected: a guard must not split one
   concept into two values.
 - **A selection change to `best` after release.** The report key's
@@ -545,74 +545,68 @@ interval after enabling, and a force-submit schedule is created up to five
 minutes late, which the grace window and the as-of commit semantics make
 harmless.
 
-## Readiness
+## Readiness and health
+
+This section is amended. It first specified one core route that composed a
+per-extension configuration-validity verdict with named checks. That verdict
+duplicates the setup checklist the console already derives on the activity
+home page, and it joined two questions that belong apart: whether the activity
+is configured correctly, which staff can fix, and whether the extensions the
+activity needs are running, which they cannot. The core route is an extension
+health read, and the configuration checklist stays where it is built, on the
+activity home page.
+
+### The health read
 
 ```
-GET /activities/{id}/readiness
+GET /activities/{id}/healthz
 ```
 
-The core fans out one request on a single subject that every extension
-subscribes to, using the broker's multi-request, and collects answers until a
-two-second deadline; the multi-request drains until the deadline, so a
-fan-out always costs the full timeout, and the core caches the composed
-answer per activity for five seconds. Answers are keyed by extension with the
-worst status winning when two instances of one extension both answer. Each
-extension answers for its own key with named checks:
+The core resolves the activity's envelope, takes the extensions the activity
+requires, and asks each whether it is healthy. An extension is required when
+its key resolves enabled; submission and report, locked on, always count, and
+a key that resolves off is neither asked nor listed. The ask is one request on
+a single subject every extension subscribes to, over the broker's
+multi-request, collected until a two-second deadline, with the composed answer
+cached per activity for a few seconds and the worst status winning when two
+instances of one extension answer. The fan-out, the deadline, and the cache
+are the machinery already described; only what is asked and returned changes.
 
-```json
-{ "extension": "submission", "status": "red",
-  "checks": [
-    { "id": "window_valid", "status": "red",
-      "message": "Midterm A: due must be at or after stop for a hard cutoff" },
-    { "id": "force_submit_scheduled", "status": "green", "message": "2 of 2 open collections" }
-  ] }
-```
+Each required extension reports one of three states:
 
-Statuses: green; red; undecided (the key is absent; the extension is on the
-constant and staff have not recorded a choice); not applicable (the key is
-present and disabled); reserved (while a key is not yet live: the key
-is not yet live, the extension's own table is authoritative, and its checks
-reflect that table); unavailable (the extension is enabled but did not
-answer within the deadline, or is not registered). Overall status is the
-worst applicable one; undecided and reserved are their own lines, never
-folded into green.
+- healthy: the extension is registered and answered, and every dependency its
+  own configuration requires is reachable.
+- unreachable: the extension is not registered, or is registered but did not
+  answer within the deadline. Its process is down.
+- dependency_down: the extension answered, but a dependency the activity's
+  configuration requires is not reachable.
 
-An undecided answer reports the constant, so the console draws every
-undecided row from the settings read and the constants table without a
-fan-out; the extension may still say what it sees ("a paper exists; enable
-to serve it") so staff know what a decision would change. The setup list's
-count of pending decisions is the count of absent keys.
+An extension decides which dependency probes to run by reading its own
+resolved key under the boundary rule; the core interprets no key. Proctoring
+probes the media server only when the policy turns live media on; the grading,
+sandbox, and environment backends are probed only when the configuration would
+use them. A dependency down platform-wide shows on every activity that
+requires it; a single operational status surface for platform health is a
+separate concern and is not part of this read.
 
-First-cut check lists, each owned by its extension: submission checks that
-at least one collection exists, every window is valid for the cutoff, a
-force-submit schedule exists per open collection under a hard cutoff, and
-membership is not empty; examination checks that the document exists,
-materialization is current, and marks are complete; pipeline checks that a
-config is attached and consistent with the modality, the formula is
-materialized, the image resolves, and the runner backend is healthy; report
-checks that the selection is decided; sandbox checks that a pool config is
-bound, the executor image is available, and every coding question has an
-execution config or inherits the pool's limits; environment checks that a
-template is assigned and its last build succeeded, which needs the build
-outcome the console has already asked for; proctoring checks that rooms
-exist, a chief invigilator is assigned, identity verification is permitted
-by the server-wide flag, and the media server is reachable when live media
-is on.
+The overall status is the worst of the listed extensions. The read reports and
+never gates: every status transition stays allowed, and the health verdict
+sits in front of the person pressing activate. A gate that refuses activation
+is a later follow-up.
 
-Readiness reports and never gates. Every status transition stays allowed,
-and the readiness strip puts the verdict in front of the person pressing
-activate. A gate that refuses activation on a red check is a later
-follow-up. The overview page derives readiness client-side from four
-per-extension summary reads under an earlier constraint that the core
-aggregates nothing; this RFD centralizes the verdict, and the summary reads
-stay for detail. An enabled extension that is not registered reports
-unavailable, which is the rail state the console has no source for.
+### Configuration validity stays on the home page
 
-The console rail models three row states (applicable, disabled,
-unavailable). Readiness maps onto them and adds two: applicable splits into
-green and red, disabled is a present key with `enabled = false`,
-unavailable is unchanged, and undecided and reserved are new row states the
-rail gains in the console step.
+Whether the activity is configured correctly, that a collection exists, the
+window is valid, the document has questions and marks, a template or a config
+or a pool is bound, rooms and a chief invigilator are assigned, is the setup
+checklist the console derives on the activity home page from its per-extension
+summary reads. That checklist predates this RFD; an earlier draft here proposed
+to centralize it in the core, and that is withdrawn. The core composes no
+configuration verdict. The home page keeps deriving the checklist from the
+summary reads, and a summary read that fails renders its rows unchecked rather
+than as passing. The one signal the checklist cannot source on its own,
+whether a required extension is running, is what the health read above
+provides.
 
 ## The modality rule and online homework
 
@@ -705,11 +699,11 @@ revert staff decisions. With dual-write the compatibility field is correct
 with no handler code and the down migration is lossless for the cutoff; the
 column drops after the console readers move.
 
-**Readiness.** The core route, the caching fan-out, and the
-submission, examination, environment, and proctoring responders, with
-reserved keys answered from the extension's own table.
+**The health read.** The core route, the caching fan-out, and the health
+responders, each reporting whether its extension is running and whether a
+dependency its configuration requires is reachable.
 
-The verification gate for the intermediate and readiness, mapped to test tiers: unit
+The verification gate for the intermediate and the health read, mapped to test tiers: unit
 tests on the shared package (decode, validators, predicates over resolved
 values, projections); route-wiring tests updated for the four routes;
 integration on a warm stack: two concurrent writes to different keys both
@@ -720,8 +714,8 @@ schedules and cancels force-submit, a timer firing on a now-soft activity
 stamps nothing, the migration test holds and exercises down and up, the
 student activity read has no `settings` key; end-to-end tier, with built
 binaries since registration identity exists only there: one stopped
-extension reports unavailable, and undecided, reserved, not applicable, and
-green are each observed.
+extension reports unreachable, and healthy and dependency_down are each
+observed.
 
 **The moves.** One extension per change, in this order: pipeline's
 trigger (one reader plus the manual and batch trigger gates, no console
@@ -730,7 +724,7 @@ envelope and the cross-schema grant retires, the requires-hard-cutoff
 predicate goes live, the off-is-total middleware and its route-coverage test
 land before any tuple change, proctoring provisions its own tuple and anchor
 with an ensure); the sandbox switch (only `enabled`, the off-gate, and the
-readiness responder; the pool config stays as sandbox's artefact with its
+health responder; the pool config stays as sandbox's artefact with its
 routes unchanged). Report: the of-record seam repoints to the envelope's
 selection together with the unlock of `best`, then the existing follow-up
 that exposes the resolved selection on a roster-reachable read. The
@@ -738,7 +732,7 @@ per-collection `score_selection` column is dropped. Presets gain the three
 keys.
 
 **The console.** The settings rail on the envelope with presets in
-the create dialog, the undecided and reserved row states, the readiness
+the create dialog, the undecided and reserved row states, the health
 strip, the type readers rerouted, the mixed-combination presentation for the
 two unsupported axis combinations, then the proctoring config and runtime
 forms writing to the settings routes as each move lands. The interface needs
@@ -749,15 +743,15 @@ its own visual design round with running candidates before any choice.
 | Step | Status | Still open |
 |---|---|---|
 | the intermediate | decided and specified in the core plan document | ordinary implementation choices |
-| readiness | decided in shape | each extension's check list, which the first rule leaves to the extension; the environment build check waits on the build-outcome item |
+| the health read | decided in shape | each extension's dependency probes, self-gated on its own config; a platform-wide status surface is separate; the configuration checklist stays on the activity home page |
 | the moves | decided in direction | a short specification per move before it starts, including what proctoring does with its own live sessions on an off |
 | the console | decided in direction | the interface itself; the mixed-combination presentation; the off-state page |
 
 ### Deferred
 
 Exam and assignment as stored templates (contract-neutral, because create
-takes an inline envelope); the online-homework checklist; a readiness gate on
-activation; the console presentation of the two mixed axis combinations;
+takes an inline envelope); the online-homework checklist; a gate that refuses activation on a red
+health or setup status; the console presentation of the two mixed axis combinations;
 extensions advertising their settings schema to the core.
 
 Extensions advertising their settings schema, so that the core holds no
@@ -767,7 +761,7 @@ core to validate a write while its extension is down; that is a schema
 registry with a versioning and migration story of its own. The cross-key
 predicates of rule 2 are declared by a dependent key about another key and
 cannot be advertised by either key alone, so they stay in the core in any
-design. Nothing in the envelope, the notification, or the readiness subject
+design. Nothing in the envelope, the notification, or the health subject
 forecloses the change: the shared package's specification table is populated
 through one registration path that a runtime source could feed later.
 
@@ -782,7 +776,7 @@ returning the resolved view; validate and delete helpers that run the
 validator and every predicate over the resolved envelope), the route DTOs
 and fault categories, the metadata column shape, the migration with its
 backfill statements and down side, the notification message and subject
-constant, the readiness request and response messages with the deadline and
+constant, the health request and response messages with the deadline and
 cache, the explicit column lists and the two projections on the three reads,
 the rewrite of the nine type predicates in the collection queries and the
 two in the export queries, the force-submit reconcile and fire-time guard,
@@ -809,8 +803,9 @@ step lands.
 ## UX
 
 Staff see one settings rail per activity with one row per extension: a
-switch, the extension's policy fields, who decided and when, and the
-readiness verdict with its named checks. Undecided rows say what the
+switch, the extension's policy fields, who decided and when, the setup
+checklist with its named checks, and the health verdict for whether the
+extensions are running. Undecided rows say what the
 constant does and what a decision would change. Extension artefacts
 (templates, pool configs, papers) keep their own pages. Exam and assignment
 are presets in the create dialog. Students see no settings; their surfaces
