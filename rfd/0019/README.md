@@ -523,13 +523,16 @@ core repository and changes in the same change.
 1. Review of this RFD.
 2. **The console defects listed in the background**, fixed in separate
    changes. They do not depend on the contract.
-3. **Core plumbing change:** the listing package, the CORS exposure, and the
-   edits to the API package guide and the query conventions document.
+3. **Core plumbing change:** the listing package and the CORS exposure. No
+   endpoint uses the package yet.
 4. **Core migration change:** every endpoint in the assignment table, the
    SQL shape, the unpaginated and deleted queries, the fixes listed under
-   Server implementation, the removal of `page`, the swagger test, and the
-   lint rule. It merges together with the zinc-sig/ui change to the
-   workflows admin page.
+   Server implementation, the removal of `page`, the swagger test, the lint
+   rule, and the edits to the API package guide and the query conventions
+   document. The documents change with the code they describe: until the
+   migration, every endpoint still pages through the request struct and the
+   SQL defaults those documents describe. It merges together with the
+   zinc-sig/ui change to the workflows admin page.
 5. **Core Go client change:** the shared SDK transport, the list method
    shape, zincli, zinc-mcp, and the exam bundle reader.
 6. **zinc-sig/ui adoption:** `fetchPage`, `useFetchAll`, the server-paged
