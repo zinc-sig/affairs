@@ -1,7 +1,7 @@
 ---
 authors: Thomas Li
 state: discussion
-discussion:
+discussion: https://github.com/stdx-space/zinc-affairs/pull/1
 labels: direction, interop
 ---
 
