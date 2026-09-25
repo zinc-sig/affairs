@@ -235,7 +235,9 @@ anything usable under off would be unverified; a partial off also leaves the int
 Enabling is the explicit first step before authoring or running, and the
 exam preset does it at creation. What exists stays readable under off
 (documents, runs, attempts, recordings): the switch governs new use, never
-reading records, which is the console's own rule for records surfaces.
+reading records. The console shows an extension's surfaces only while its key
+is on, with the same rule for every extension, so what the console hides under
+off stays readable through the API.
 Enforcement is one middleware per extension route group that resolves the
 activity and checks the key, plus a route-coverage test, because examination
 alone has about forty write routes and a missed route is a silent partial
@@ -415,21 +417,42 @@ DELETE /activities/{id}/settings/{extension}        back to undecided
   found that neither the console's student path nor the exam client's
   student path reads `kind`; the coursework read needs both fields
   (lead time, conflict detection, and enter-versus-submit intent), the
-  activity list needs both for the label on the unassigned set and the
-  course directory, and the activity read needs `paper` for the client's
-  staff review and export path. The collections read needs nothing, and a
-  flat `proctored` would duplicate the proctoring-status read students
-  already have. The "Exam" and "Assignment" labels are console copy derived
-  from the two fields.
+  activity list needs both for the unassigned set and the course directory,
+  and the activity read needs `paper` for the client's staff review and
+  export path. The collections read needs nothing, and a flat `proctored`
+  would duplicate the proctoring-status read students already have. The
+  console derives no type label from the two fields: they are inputs to what
+  a student surface shows as needing attention, and "Exam" and "Assignment"
+  remain only as preset names in the create dialog.
 - **The envelope is served only by its own route**, gated by activity edit
   rights, which is the posture the proctoring config read has for
   staff; the invigilator's config read stays on proctoring's own route.
-- **Write authorization is activity edit rights for every key.** This
-  widens examination: examination's own edit relation is coordinator,
-  admin, or creator, while activity edit includes instructors, so an
-  instructor who cannot edit a document can switch the paper off. Document
-  creation already uses activity edit rights, so the switch follows the
-  same relation as the binding it governs. The widening is accepted.
+  Activity edit rights cover the course coordinator, instructors, teaching
+  assistants, admins, and a direct grant.
+- **A reader without edit rights learns capability state only through
+  published fields.** Those readers are students, invigilators assigned to a
+  room without a course role, and users granted grading, collection
+  management, or document creation directly. They get the declared
+  projections on the activity, list, and coursework reads, and proctoring's
+  status read, which answers a caller who can read the activity or who is in
+  proctoring's operations circle. A new need of such a reader is met by
+  publishing a named field on the owning key, never by widening the settings
+  read, so a key added later stays hidden from students until someone decides
+  to publish it.
+- **Write authorization is activity edit rights for every key**, teaching
+  assistants included, which is wider than some extensions' own relations.
+  Examination's own edit relation gives a
+  teaching assistant only the papers they created, while activity edit
+  rights include every teaching assistant of the course, so a teaching
+  assistant who cannot edit a paper can switch the paper off. The same
+  people can turn proctoring on, which makes the activity undeletable;
+  change the score selection, which changes every released score of record
+  at once; and apply a preset. Document creation already uses activity edit
+  rights, so the paper switch follows the same relation as the binding it
+  governs. The widening is accepted because teaching assistants can already
+  delete the activity and change its runtime. If teaching assistants ever
+  need narrowing, that is a change to activity edit rights, not a per-key
+  rule.
 - **Metadata** holds, per key, the update time (transaction time) and the
   writer's user id, written in the same update as the key, so the console
   can say who decided and when.
@@ -592,7 +615,8 @@ separate concern and is not part of this read.
 The overall status is the worst of the listed extensions. The read reports and
 never gates: every status transition stays allowed, and the health verdict
 sits in front of the person pressing activate. A gate that refuses activation
-is a later follow-up.
+is a later follow-up. The read is gated on activity edit rights, as the
+envelope read is.
 
 ### Configuration validity stays on the home page
 
@@ -630,8 +654,11 @@ the clients and in semantics: the exam client's entry gate compares the
 session cap with the window end for every activity it opens, so a two-week
 window trips the twelve-hour cap on every visit and the gate must apply
 only under a hard cutoff; the student home and course cards key intent and
-lead time on the type and should key intent on `paper` and lead time on
-`cutoff`; late answers after the due time under a soft cutoff accrue delay
+lead time on the type; they drop it and instead show what needs the
+student's attention (a start to attend, pre-start checks, a deadline that is
+final or accepts late work, the client or an upload, something to resume,
+released results), with `paper` and `cutoff` as inputs; late answers after
+the due time under a soft cutoff accrue delay
 as attachments do, which needs a product decision; and force-submit does not
 run, so a student who never commits stays a no-show. None of these block the
 settings work; they are the checklist for the day the combination is
@@ -745,14 +772,17 @@ its own visual design round with running candidates before any choice.
 | the intermediate | decided and specified in the core plan document | ordinary implementation choices |
 | the health read | decided in shape | each extension's dependency probes, self-gated on its own config; a platform-wide status surface is separate; the configuration checklist stays on the activity home page |
 | the moves | decided in direction | a short specification per move before it starts, including what proctoring does with its own live sessions on an off |
-| the console | decided in direction | the interface itself; the mixed-combination presentation; the off-state page |
+| the console | decided in direction | the interface itself; the mixed-combination presentation |
 
 ### Deferred
 
 Exam and assignment as stored templates (contract-neutral, because create
 takes an inline envelope); the online-homework checklist; a gate that refuses activation on a red
 health or setup status; the console presentation of the two mixed axis combinations;
-extensions advertising their settings schema to the core.
+extensions advertising their settings schema to the core; opening the health
+read to proctoring's operations circle (the chief invigilator, course staff,
+and room invigilators), which needs careful design because it could disclose
+operational status to people outside the operations team.
 
 Extensions advertising their settings schema, so that the core holds no
 per-key file, is out of scope. Rule 3 makes a write's legality a function of
