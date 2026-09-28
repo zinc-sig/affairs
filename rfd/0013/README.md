@@ -1050,8 +1050,9 @@ body disagree, the amendment is authoritative.
 
 ### 2026-09-28: Dependencies gate by scenario code
 
-State: proposed. The runtime applies the body's whole-stage gating until
-this amendment is implemented.
+State: proposed. Discussion:
+[#20](https://github.com/zinc-sig/affairs/pull/20). The runtime applies
+the body's whole-stage gating until this amendment is implemented.
 
 Affects [Stage block](#stage-block), [Field
 definitions](#field-definitions) (`skipped`), and [Validate-phase
