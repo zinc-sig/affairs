@@ -125,7 +125,8 @@ core may know: it validates shape through validators the extensions author,
 evaluates cross-key preconditions that the dependent extension declares,
 never reads extension state or calls an extension on the write path, publishes
 one notification that no extension is required to consume, derives nothing
-but declared projections, and asks extensions only through the health read.
+but the fields each key declares public, and asks extensions only through the
+health read.
 
 **Exam and assignment are presets.** The console and the command-line
 client write a named envelope at creation. The backend stores no type.
@@ -347,20 +348,20 @@ extensions. Six rules bound both.
    best-effort after commit, over core NATS at most once. No extension is
    required to subscribe; a restarting subscriber converges by its ensure;
    nothing in the core waits for a subscriber.
-5. **Core derives nothing from the envelope except declared projections,
-   and any extension may read a declared value through the shared
-   package's typed accessor.** The flat `cutoff` and `paper` fields on
-   student reads are projections the owning key declares; the core copies a
-   value, it does not interpret one. The accessor is what lets submission
-   serve the coursework read with `paper` and read the report's default
-   visibility when it creates a collection, both reads of core data decoded
-   by the package that defines the key.
+5. **Core derives nothing from the envelope except what each key declares
+   public, and any extension may read a declared value through the shared
+   package's typed accessor.** The `published` object on the activity reads
+   holds each key's public sub-object, declared by the owning key; the core
+   copies values, it does not interpret them. The accessor is what lets
+   submission serve the coursework read with `published` and read the
+   report's default visibility when it creates a collection, both reads of
+   core data decoded by the package that defines the key.
 6. **The health read is the only place the core asks extensions anything,
    and it is read-only, bounded, and optional.** One fan-out per request with
    a timeout; an extension that does not answer is reported unreachable.
 
 What the core embeds per extension, in total: a schema it calls but does not
-read, declared predicates, declared projections, and a health topic. What
+read, declared predicates, a declared public sub-object, and a health topic. What
 it never embeds: field semantics, extension tables or views, synchronous
 calls on write, a subscriber it depends on, or a write into an extension's
 authorization namespace.
@@ -388,7 +389,7 @@ route:
 
 ```
 POST   /activities                                  body may carry `settings`
-GET    /activities/{id}                             carries `cutoff`, `paper`
+GET    /activities/{id}                             carries `published`
 GET    /activities/{id}/settings                    `settings`, `defaults`, `meta`
 PUT    /activities/{id}/settings/{extension}        replace one key
 DELETE /activities/{id}/settings/{extension}        back to undecided
@@ -410,35 +411,37 @@ DELETE /activities/{id}/settings/{extension}        back to undecided
   proctoring is enabled is refused. Locked keys may be deleted; the constant
   satisfies the lock.
 - **The activity read, the activity list, and the coursework read** carry
-  the two flat projections and nothing else from the envelope. The activity
-  queries select whole rows and the handlers return them, so the new
-  columns need explicit column lists or they reach every student; a test
-  asserts the student read has no `settings` key. An audit of zinc-sig/ui
-  found that neither the console's student path nor the exam client's
-  student path reads `kind`; the coursework read needs both fields
-  (lead time, conflict detection, and enter-versus-submit intent), the
-  activity list needs both for the unassigned set and the course directory,
-  and the activity read needs `paper` for the client's staff review and
-  export path. The collections read needs nothing, and a flat `proctored`
-  would duplicate the proctoring-status read students already have. The
-  console derives no type label from the two fields: they are inputs to what
-  a student surface shows as needing attention, and "Exam" and "Assignment"
+  `published` and nothing else from the envelope; the disclosure rule below
+  decides what is in it. The activity queries select whole rows and the
+  handlers return them, so the new columns need explicit column lists or
+  they reach every student; a test asserts the student read has no
+  `settings` key. The flat `cutoff` and `paper` fields that the intermediate
+  added repeat two published values and are removed together with `kind`.
+  An audit of zinc-sig/ui found that neither the console's student path nor
+  the exam client's student path reads `kind`. The console derives no type
+  label from the settings: the published values are inputs to what a
+  student surface shows as needing attention, and "Exam" and "Assignment"
   remain only as preset names in the create dialog.
 - **The envelope is served only by its own route**, gated by activity edit
   rights, which is the posture the proctoring config read has for
   staff; the invigilator's config read stays on proctoring's own route.
   Activity edit rights cover the course coordinator, instructors, teaching
   assistants, admins, and a direct grant.
-- **A reader without edit rights learns capability state only through
-  published fields.** Those readers are students, invigilators assigned to a
-  room without a course role, and users granted grading, collection
-  management, or document creation directly. They get the declared
-  projections on the activity, list, and coursework reads, and proctoring's
-  status read, which answers a caller who can read the activity or who is in
-  proctoring's operations circle. A new need of such a reader is met by
-  publishing a named field on the owning key, never by widening the settings
-  read, so a key added later stays hidden from students until someone decides
-  to publish it.
+- **Disclosure.** Only people who can edit the activity read its full
+  settings. Everyone who can read the activity gets `published`: the fields
+  each settings key declares public, with final values, on the activity
+  read, the activity list, and the coursework list. Nothing is public unless
+  its key declares it, so a key or field added later stays hidden until
+  someone decides to publish it. The key's public definition in core is the
+  record of what is published. A field for a narrower audience never goes
+  in `published`; it gets its own read, gated by the extension that owns
+  it. Who sees a field is decided per read, never per field. Publishing a
+  field is a product decision, approved in review, and core's shape test on
+  the student read makes each widening visible there. An extension's own
+  gated read may serve more of its key to that read's audience: the
+  proctoring status read serves the full proctoring policy to the
+  activity's readers and the operations circle, because the exam client's
+  admission flow needs it.
 - **Write authorization is activity edit rights for every key**, teaching
   assistants included, which is wider than some extensions' own relations.
   Examination's own edit relation gives a
@@ -764,6 +767,10 @@ strip, the type readers rerouted, the mixed-combination presentation for the
 two unsupported axis combinations, then the proctoring config and runtime
 forms writing to the settings routes as each move lands. The interface needs
 its own visual design round with running candidates before any choice.
+Before the console moves its readers, the core adds `published` to the
+activity reads beside the flat `cutoff` and `paper`; once the console and
+the exam client read `published`, the flat fields, `kind`, and the
+coursework read's `activity_kind` drop together.
 
 ### Decision status by step
 
@@ -838,8 +845,9 @@ checklist with its named checks, and the health verdict for whether the
 extensions are running. Undecided rows say what the
 constant does and what a decision would change. Extension artefacts
 (templates, pool configs, papers) keep their own pages. Exam and assignment
-are presets in the create dialog. Students see no settings; their surfaces
-carry the cutoff and the paper flag and derive their copy from those.
+are presets in the create dialog. Students do not see the settings rail;
+their surfaces derive their copy from `published`, as the disclosure rule
+under "Writes and reads" sets out.
 
 The command-line client replaces its type flag with settings get, set, and
 unset commands and prints a warning on the transitions the console confirms.
