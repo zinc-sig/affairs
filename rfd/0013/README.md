@@ -1041,3 +1041,195 @@ Listed explicitly to mark the boundary for follow-up RFDs:
 - **Cross-file `import` / `include`.** A pipeline config and a formula config are each one self-contained HCL file. Sharing fragments across configs is not supported in v3.
 - **Stdout/stderr size caps and per-stage output limits.** The runtime imposes its own caps; per-stage configurable output limits are a runtime RFD's concern.
 - **UI changes for the new HCL editor.** The `apps/console` editor consumes a schema produced by reflecting on the v3 Go structs (`schemagen`); the schema is updated as part of v3 implementation. The visual design of the editor is a separate UI track.
+
+## Amendments
+
+Amendments record changes to the design above after this RFD merged. The
+body is left as written, as the design record. Where an amendment and the
+body disagree, the amendment is authoritative.
+
+### 2026-09-28: Dependencies gate by scenario code
+
+State: proposed. The runtime applies the body's whole-stage gating until
+this amendment is implemented.
+
+Affects [Stage block](#stage-block), [Field
+definitions](#field-definitions) (`skipped`), and [Validate-phase
+warnings](#validate-phase-warnings-non-fatal).
+
+#### Problem
+
+The body gates whole stages: if any dependency ends `failed`, `error`, or
+`skipped`, every scenario of the dependent stage is skipped. One scenario
+that fails is enough to fail its stage.
+
+That rule defeats the idiom the body names as the common case,
+`compile`, `execute`, `test`. The RFD's own
+[`example-pipeline.hcl`](example-pipeline.hcl) shows it. In
+`programming-q1`, `execute` runs scenarios `small`, `medium`, and `large`,
+and `test` depends on `execute` by the implicit default. The formula in
+[`example-formula.hcl`](example-formula.hcl) awards 20, 30, and 50 percent
+of the question's marks for those three scenarios. If `large` times out,
+`execute` ends `error`, every `test` scenario is skipped, and the
+component scores 0, although `small` and `medium` produced correct output.
+The formula's per-case weighting never applies in the case it was written
+for.
+
+Each workaround available under the body gives up a different guarantee:
+
+- `test` with `depends_on = ["compile"]` compares every scenario, but no
+  dependency then orders `test` after `execute`. The body describes
+  `depends_on = []` as "useful for stages that should run in parallel with
+  the first stage", so a runtime that runs independent stages in parallel
+  would let `test` read an output file `execute` has not yet written. The
+  runtime runs stages one at a time, which is a property of the
+  implementation, and the contract does not promise it.
+- Checking `succeeded(sc.execute) && succeeded(sc.test)` per scenario in
+  the formula corrects the score only when combined with the workaround
+  above, and the results still show the comparison of a failed run as a
+  pass.
+- One stage pair per scenario (`execute_small`, `test_small`, and so on)
+  gates correctly, but stages run one at a time, so the scenarios of a
+  stage no longer run in parallel, and N scenarios become 2N stages.
+
+The body already defines the identity the idiom needs. [Scenarios](#scenarios)
+states that "the same code across different stages of the same pipeline
+refers to the same logical scenario", and the formula namespace is keyed
+by that code. Gating is the one part of the contract that ignores it.
+
+#### Decision
+
+Every entry in a stage's `depends_on`, explicit or the implicit previous
+stage, is a dependency edge from the dependent stage S to the dependency
+stage D. The edge is **matched** when every scenario code of S, after
+dynamic expansion, is also a scenario code of D. Otherwise the edge is
+**unmatched**.
+
+- An unmatched edge gates the whole stage, as in the body: every scenario
+  of S is skipped when D ends `failed`, `error`, or `skipped`.
+- A matched edge gates per scenario: scenario X of S is skipped when
+  scenario X of D does not satisfy [`succeeded()`](#hcl-functions), so when it exited
+  non-zero, timed out, carries an `error`, or was itself skipped. The
+  other scenarios of S run.
+- A scenario of S is skipped when any of its edges skips it.
+- Every edge orders stages as before. Matching changes which scenarios of
+  S are skipped, and nothing else.
+- Two stages that each have only the implicit `default` scenario form a
+  matched edge. Per-scenario and whole-stage gating give the same result
+  there.
+
+The edge is classified as a whole, so an accidental overlap of codes
+cannot narrow a dependency. Suppose `compile` has scenarios `a` and `b`,
+two builds that every test needs, and `run` has scenarios `a`, `b`, and
+`c`. Matching code by code would let `run`'s `a` start after `compile`'s
+`b` failed. Under the edge rule, `c` has no counterpart in `compile`, the
+edge is unmatched, and every `run` scenario waits for the whole `compile`
+stage.
+
+| S (codes) | D (codes) | Edge | Effect |
+|---|---|---|---|
+| `execute` (`small`, `medium`, `large`) | `compile` (`default`) | Unmatched | A failed `compile` skips every `execute` scenario. |
+| `test` (`small`, `medium`, `large`) | `execute` (`small`, `medium`, `large`) | Matched | A timed-out `execute.large` skips `test.large`. `test.small` and `test.medium` run. |
+| `run` (`run_case_1`) | `compile` (`compile_a`, `compile_b`) | Unmatched | `run_case_1` runs when both `compile` scenarios succeed. |
+| `run` (`a`, `b`, `c`) | `compile` (`a`, `b`) | Unmatched, with a warning | Every `run` scenario waits for the whole `compile` stage. |
+| `report` (`default`) | `test` (`small`, `medium`, `large`) | Unmatched | Any failed `test` scenario skips `report`, as in the body. |
+
+With this rule, `example-pipeline.hcl` grades as its formula intends
+without changes: a timed-out `large` costs the 50 percent weighted on
+`large`, and `small` and `medium` keep theirs.
+
+#### Stage state
+
+The body's stage state table covers stages whose scenarios all ran or
+were all skipped. A matched edge can skip some scenarios of a stage while
+the others run. Such a stage is `error` if a scenario that ran is `error`,
+and `failed` otherwise. A scenario skipped by a matched edge is a scenario
+that did not pass, so its stage did not succeed, and stages that depend on
+it through an unmatched edge are skipped as the body describes. `skipped`
+stays exclusive: a stage is `skipped` when every one of its scenarios was
+skipped.
+
+#### Result emission
+
+`skipped: true` can appear on some scenarios of a stage. The field
+definition reads "True if the scenario was gated out by a dependency: the
+whole dependency stage through an unmatched edge, or the same-coded
+scenario through a matched edge." The other fields of a skipped scenario
+keep the values the body gives them. `succeeded()` and `failed()` both
+return false for a skipped scenario, as the body defines.
+
+#### Validate-phase warning
+
+The body's scenario-symmetry warning compares scenario codes across the
+stages that consume them. The implementation compares every pair of
+stages with two or more scenarios, whether or not a dependency joins them.
+That reports a pipeline that splits its scenarios across stage pairs,
+sample cases in one pair and hidden cases in another so they can carry
+different visibility, as asymmetric throughout.
+
+The warning is scoped to dependency edges: a warning is raised for an edge
+whose stages share at least one scenario code while S has a code that D
+lacks, because that edge falls back to whole-stage gating, which is not
+what the shared codes suggest. Matched edges, edges with no shared codes,
+and stages that no dependency joins produce no warning. The validate phase
+checks static scenario codes. The runtime classifies edges on the
+expanded codes.
+
+#### Effect on stored configs
+
+No syntax changes, and every config that validates still validates.
+
+A config with a matched edge between stages that declare scenarios
+changes behaviour: a failed scenario skips its own counterpart downstream
+and no other. This covers `example-pipeline.hcl`, the trial examination
+reference in core (`cmd/help/scenarios/trial_examination.go`, where `test`
+depends on `execute` by the implicit default), and hand-written coding
+fragments in the `compile`, `execute`, `test` shape.
+
+Re-grading a submission graded under whole-stage gating can change its
+score. For a formula that awards marks through `succeeded()`, the score
+can only rise: a scenario that was skipped either runs and succeeds or
+stays unsuccessful. A formula that counts `failed()` can fall, because a
+skipped scenario is not failed and a scenario that runs and fails is.
+Before the runtime adopts the rule, count the stored configs with a
+matched edge between stages that declare scenarios, so the re-grade
+exposure is known.
+
+#### Where the rule is implemented
+
+In core:
+
+- The grading workflow's stage loop (`workflow/grading/run_workflow.go`,
+  with `stageGated` in `workflow/grading/helpers.go`) computes the skipped
+  scenarios of a stage before scheduling it and runs the rest.
+- `DeriveStageState` (`internal/pipeline/evaluate.go`) derives the state
+  of a partially skipped stage by the stage state rule above.
+- The interactive sandbox orchestrator (`internal/sandbox/stage/orchestrator.go`)
+  applies the same rule, so a student's Run gates the way grading does.
+- `lintScenarioSymmetryWarning` (`internal/pipeline/lint.go`) is scoped to
+  dependency edges.
+- The package documentation (`internal/pipeline/README.md`,
+  `internal/pipeline/USAGE.md`) states the rule once it is implemented.
+
+#### Alternatives considered
+
+- **An explicit per-scenario attribute**, for example
+  `scenario_depends_on = ["execute"]` beside `depends_on`. It changes no
+  stored behaviour. Rejected because it adds a second dependency
+  vocabulary, and the body's idiom keeps its defect until every author
+  opts in, although the body already defines same code as same scenario.
+- **Matching code by code**, so each scenario of S waits for the
+  same-coded scenario of D when D has one and for the whole of D when it
+  does not. Rejected because an accidental overlap of codes narrows a
+  dependency, as in the build-variant example above.
+- **An order-only dependency** (`after = ["execute"]`) that orders stages
+  without gating, with per-scenario success checks in the formula.
+  Rejected because the results show the comparison of a failed run as a
+  pass, and every formula has to repeat the run check for each scenario.
+- **One stage pair per scenario.** Rejected because stages run one at a
+  time, so the scenarios of a stage lose their parallelism, and the
+  pipeline grows to two stages per scenario.
+- **Whole-stage gating with the dependent stage opted out of the
+  dependency** (`depends_on = ["compile"]` on `test`). Rejected because
+  the order of `execute` and `test` then rests on the runtime running
+  stages one at a time, which the contract does not promise.
