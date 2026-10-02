@@ -1041,3 +1041,106 @@ Listed explicitly to mark the boundary for follow-up RFDs:
 - **Cross-file `import` / `include`.** A pipeline config and a formula config are each one self-contained HCL file. Sharing fragments across configs is not supported in v3.
 - **Stdout/stderr size caps and per-stage output limits.** The runtime imposes its own caps; per-stage configurable output limits are a runtime RFD's concern.
 - **UI changes for the new HCL editor.** The `apps/console` editor consumes a schema produced by reflecting on the v3 Go structs (`schemagen`); the schema is updated as part of v3 implementation. The visual design of the editor is a separate UI track.
+
+## Amendments
+
+Amendments record changes to the design above after this RFD merged. The
+body is left as written, as the design record. Where an amendment and the
+body disagree, the amendment is authoritative.
+
+### 2026-10-02: A pipeline with no results ungrades
+
+State: proposed. Discussion: pending.
+
+Affects [`pipeline.<name>.scenarios` schema](#pipelinenamescenarios-schema)
+(missing-key semantics, heterogeneous keys, empty pipelines), [HCL
+functions](#hcl-functions) (`length`, `succeeded`, `failed`, and the
+typical patterns), and [Runtime evaluation
+errors](#runtime-evaluation-errors-during-formula-evaluation).
+
+#### Problem
+
+The body gives a declared pipeline that produced no results an empty
+`scenarios` map, and expects the author to defend against it with `try()`
+or explicit conditionals. Nothing in a comprehension over an empty map
+fails, so `try()` has nothing to catch, and the hard-fail rule never
+applies:
+
+- `alltrue([for _, s in pipeline.q1.scenarios : succeeded(s.test)]) ? 30 : 0`,
+  the body's own all-or-nothing pattern, awards full marks, because
+  `alltrue([])` is `true`.
+- `sum([...])` and `length([...])` comprehensions award 0, the silent zero
+  the hard-fail rule exists to prevent.
+- `length(pipeline.<name>.scenarios) == 0`, the defence the body suggests,
+  is an evaluation error: the scenarios value is an object, which
+  `length()` does not accept.
+
+A pipeline has no results when its run failed and its retry failed, when a
+configuration fault stopped the run, when the run was cancelled, or when
+the formula declares a pipeline the pipeline config does not define.
+
+The body also states that `succeeded()` and `failed()` are null-permissive
+for a missing field path, so that iterating `pipeline.<name>.scenarios`
+"silently skips" the implicit `"default"` code of a `compile` stage without
+scenarios. A reference to a missing attribute fails before the function is
+called, so `succeeded(s.test)` on that code is an evaluation error, and the
+all-or-nothing pattern ungrades every run of a pipeline with such a
+`compile` stage. Were the reference to yield null instead, `succeeded()`
+would return `false` and the pattern would award 0; neither skips the code.
+
+#### Change
+
+- A declared pipeline that produced no results is absent from the
+  `pipeline` namespace. A reference to it is an evaluation error, so the
+  score is ungraded unless the expression catches the error with `try()`.
+  A manual override in `try(manual["<component>"], ...)` still applies, and
+  `try(<expression>, <fallback>)` still scores the fallback when the author
+  wants a missing run to score it.
+- The ungraded diagnostic names the declared pipelines with no results.
+- A pipeline with partial results is unchanged: `scenarios` holds the
+  scenarios that produced results.
+- `succeeded()` and `failed()` return `false` for a null argument. A
+  reference to a stage the scenario lacks is an evaluation error. To
+  iterate only the scenarios that have a stage, filter with `can()`:
+
+  ```hcl
+  score = alltrue([for _, s in pipeline.q1.scenarios :
+                   succeeded(s.test) if can(s.test)]) ? 30 : 0
+
+  score = sum([for code, s in pipeline.main.scenarios :
+               local.marks[code] if can(s.test) && succeeded(s.test)])
+  ```
+
+- `length()` counts a comprehension over the scenarios, such as
+  `length([for code, s in pipeline.<name>.scenarios : code])`, not the
+  scenarios value itself.
+
+#### Effect on stored scores
+
+The rule applies at the next evaluation of a delivery's score. Stored
+scores are not re-evaluated by this change. A re-grade that runs the
+pipelines again applies it. A rescore or an override re-evaluates the
+formula against the stored results but refuses to replace a graded score
+with an ungraded one, so it does not withdraw a score that the empty-map
+rule over-awarded. Scores already written are left as they are; no
+backfill is planned.
+
+#### Implementation
+
+Core evaluates formulas in `internal/pipeline/evaluate.go`
+(`buildPipelineResultsNamespace`). The console's grading templates and
+formula snippets in zinc-sig/ui adopt the `can()` filter.
+
+#### Alternatives considered
+
+- **Keep the empty map and fix only the documentation and templates.** This
+  leaves every stored formula that uses the all-or-nothing pattern
+  awarding full marks for a run that never happened.
+- **Ungrade the whole score whenever a declared pipeline has no results.**
+  This also ungrades components that do not read the pipeline, and
+  overrides the author's explicit `try()` fallback and staff's manual
+  override.
+- **An unknown value in place of the missing pipeline.** Unknown values
+  propagate through expressions without an error, and `try()` returns an
+  unknown result rather than its fallback, so the failure surfaces as a
+  non-numeric score with no indication of its cause.
