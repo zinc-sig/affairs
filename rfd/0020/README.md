@@ -1,7 +1,7 @@
 ---
 authors: Thomas Li
 state: prediscussion
-discussion:
+discussion: "[#21](https://github.com/zinc-sig/affairs/pull/21)"
 labels: direction, platform
 ---
 
