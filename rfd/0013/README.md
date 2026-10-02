@@ -1050,7 +1050,8 @@ body disagree, the amendment is authoritative.
 
 ### 2026-10-02: A pipeline with no results ungrades
 
-State: proposed. Discussion: pending.
+State: proposed. Discussion:
+[#22](https://github.com/zinc-sig/affairs/pull/22).
 
 Affects [`pipeline.<name>.scenarios` schema](#pipelinenamescenarios-schema)
 (missing-key semantics, heterogeneous keys, empty pipelines), [HCL
@@ -1128,8 +1129,10 @@ backfill is planned.
 #### Implementation
 
 Core evaluates formulas in `internal/pipeline/evaluate.go`
-(`buildPipelineResultsNamespace`). The console's grading templates and
-formula snippets in zinc-sig/ui adopt the `can()` filter.
+(`buildPipelineResultsNamespace`), changed in
+[zinc-sig/core#640](https://github.com/zinc-sig/core/pull/640). The
+console's grading templates and formula snippets adopt the `can()` filter
+in [zinc-sig/ui#564](https://github.com/zinc-sig/ui/pull/564).
 
 #### Alternatives considered
 
