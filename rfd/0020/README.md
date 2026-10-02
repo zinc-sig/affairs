@@ -30,11 +30,11 @@ keys, cache, OpenFGA, Temporal, DinD, registry, LiveKit, telemetry, and the
 session cookie fields. The extension builds its long-lived clients from that
 response and keeps it. A change to the core's config therefore reaches an
 extension only when the extension restarts. In September 2026 this dependency
-was implicit, and operators missed it. The HKBU Compose deployment recreates
-the extensions when the core's rendered config changes, using a per-config
-content hash, and a change to the Helm chart
-([zinc-sig/cobe-deployment#9](https://github.com/zinc-sig/cobe-deployment/pull/9))
-does the same for the extension pods.
+was implicit, and operators missed it. Since chart 0.3.6
+([zinc-sig/cobe-deployment#9](https://github.com/zinc-sig/cobe-deployment/pull/9)),
+the Helm chart rolls the extension pods whenever the core's rendered config
+changes. The HKBU Compose deployment recreates the extensions in the same
+case, using a per-config content hash.
 
 That path suits connection settings, which ops owns and which are needed to
 construct a client. It does not suit policy that an instance owner decides:
