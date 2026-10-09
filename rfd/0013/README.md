@@ -1337,8 +1337,8 @@ in [zinc-sig/ui#564](https://github.com/zinc-sig/ui/pull/564).
 
 ### 2026-10-08: Pipelines place submission parts
 
-State: proposed. Discussion: the pull request link is added when the pull
-request opens.
+State: proposed. Discussion:
+[#23](https://github.com/zinc-sig/affairs/pull/23).
 
 Affects [Pipeline block](#pipeline-block) (a `submission` block the body
 omits) and [Validate phase](#validate-phase-schema-only) (the rules for
