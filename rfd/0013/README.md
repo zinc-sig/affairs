@@ -1238,6 +1238,7 @@ In core:
 ### 2026-10-02: A pipeline with no results ungrades
 
 State: proposed. Discussion:
+[#20](https://github.com/zinc-sig/affairs/pull/20), first opened as
 [#22](https://github.com/zinc-sig/affairs/pull/22).
 
 Affects [`pipeline.<name>.scenarios` schema](#pipelinenamescenarios-schema)
@@ -1338,6 +1339,7 @@ in [zinc-sig/ui#564](https://github.com/zinc-sig/ui/pull/564).
 ### 2026-10-08: Pipelines place submission parts
 
 State: proposed. Discussion:
+[#20](https://github.com/zinc-sig/affairs/pull/20), first opened as
 [#23](https://github.com/zinc-sig/affairs/pull/23).
 
 Affects [Pipeline block](#pipeline-block) (a `submission` block the body
