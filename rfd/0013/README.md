@@ -1481,9 +1481,10 @@ amendment.
 ### 2026-10-12: Components scored by a level staff pick
 
 State: proposed. Discussion:
-[#20](https://github.com/zinc-sig/affairs/pull/20). Not implemented.
+[#20](https://github.com/zinc-sig/affairs/pull/20).
 
-Affects [Component block](#component-block), [Validate
+Affects [Component block](#component-block), [Dynamic
+components](#dynamic-components), [Validate
 phase](#validate-phase-schema-only), [Runtime evaluation
 errors](#runtime-evaluation-errors-during-formula-evaluation), and the
 pipeline config's [Top-level structure](#top-level-structure) (the number
@@ -1502,7 +1503,7 @@ does not describe:
 - generated exam formulas that give each essay a manual-only component,
   `score = try(manual["<qid>"], 0)`.
 
-This leaves three problems:
+This leaves four problems:
 
 - **No shared scale.** A marker types any number from 0 to `max_score`.
   Two markers marking the same essay have nothing to agree on but the
@@ -1513,6 +1514,10 @@ This leaves three problems:
 - **Upload assignments cannot be marked.** Core refuses an override on an
   activity with no examination document, so an upload assignment has no
   way to take a staff-judged mark at all.
+- **Marking stops at the first pick.** Core refuses an override whose
+  result is ungraded, even when the delivery was already ungraded. Once
+  an unmarked component is ungraded rather than 0, a marker could never
+  record the first of several picks.
 
 A paper made only of essays also has nothing to run: its pipeline config
 declares no pipelines, which the body forbids, and the grading run stops
@@ -1546,14 +1551,15 @@ component "q7" {
 - The label is the level id (`[a-zA-Z0-9_-]+`). Ids are unique within the
   component, compared without case.
 - A level component has at least two levels.
-- `points` is a parse-phase expression, like `max_score`: it may read
-  `local.*` and `document.*`, not `pipeline.*` or `manual`. Its value lies
-  in `[0, max_score]`. Lint checks literals; a value outside the range at
-  evaluation ungrades the component rather than clamping it.
+- `points` is a parse-phase expression: it may read `local.*` and
+  `document.*`, not `pipeline.*` or `manual` (stricter than `max_score`,
+  which tolerates `manual`). Its value lies in `[0, max_score]`. The
+  validate phase checks literals; a value outside the range at evaluation
+  ungrades the component rather than clamping it.
 - `description` is required. Levels display in declaration order.
 - `min_score` is refused on a level component; `weight`, `covers` and
   `title` mean what they mean on any component.
-- Lint warns when no level reaches `max_score`.
+- The validate phase warns when no level reaches `max_score`.
 - `level` blocks are allowed in static components only, not inside
   `dynamic "component"` content.
 
@@ -1571,12 +1577,14 @@ does not read it.
 | Stored override | Component |
 | --- | --- |
 | A pick of a declared level | Scores that level's `points` |
-| A pick of a level the formula no longer declares | Ungraded, code `level_unknown` |
-| A number (the component used to have a `score`) | Treated as no pick |
+| A pick of a level no longer declared | Ungraded, code `level_unknown` |
+| A number (the component had a `score`) | Treated as no pick |
 | None | Ungraded, code `level_pending` |
 
 A pick stored for a component that now has a `score` expression is
-ignored, and the expression scores as usual.
+ignored, and the expression scores as usual. In both mismatched cases the
+breakdown flags the stored override as stale, so staff can see why it no
+longer counts.
 
 The ungraded diagnostic carries a `code`: `level_pending`, `level_unknown`
 or `level_invalid` (points out of range). As for any ungraded component,
@@ -1584,11 +1592,20 @@ the delivery is ungraded, `scoring.total` is not evaluated, and the
 components that did evaluate keep their scores in the breakdown. A reader
 shows a `level_pending` component as awaiting a grade, not as a failure.
 
-**Guard.** An override, or a rescore, that would replace a graded score
-with an ungraded one is refused, unless every ungraded component is
-`level_pending`. So marking one of several essays, marking the last one,
-and removing the only pick are all accepted; an override that breaks the
-formula is refused, as before.
+Students see the picked level's id and description where the breakdown is
+visible (`score_visibility = "breakdown"`), and nothing more at
+`"total_only"`.
+
+**Guard.** An override or a rescore whose result is ungraded is accepted
+when the delivery was not graded before. When it was graded, the result
+is refused unless it is ungraded only by `level_pending` components and
+carries no other diagnostic. So marking one of several essays, marking
+the last one, and removing the only pick are all accepted, while an
+override or rescore that leaves the formula failing for any other reason,
+including a pipeline with no results or a `scoring.total` error, still
+cannot withdraw a graded score. This narrows the refusal described in the
+2026-10-02 amendment's *Effect on stored scores*; that refusal still
+holds whenever any other diagnostic is present.
 
 **Activities with no paper.** Overrides and picks apply to any activity
 with a formula, with or without an examination document.
@@ -1596,14 +1613,16 @@ with a formula, with or without an examination document.
 **Pipeline configs with no pipelines.** A pipeline config may declare no
 `pipeline` blocks. Its grading run dispatches nothing and evaluates the
 formula directly, so a paper made only of essays gets a score row at
-grading time.
+grading time. A rescore likewise accepts a delivery with no results when
+its pipeline config declares no pipelines.
 
 #### Effect on stored configs and scores
 
 - A formula without `level` blocks behaves as before.
 - Generated exam formulas emit a level component for an essay only when
   its marking scheme declares levels; other essays keep the manual-only
-  form. Nothing is backfilled.
+  form. Nothing is backfilled. The essay's free-text rubric guidance stays
+  beside the levels.
 - A formula edit does not re-score. A change to a level's `points` reaches
   a delivery at its next grade, rescore or override.
 - Picks belong to a delivery and do not carry over to a resubmission. With
@@ -1622,7 +1641,7 @@ level picker to the override.
 #### Alternatives considered
 
 - **A separate `rubric` block that components reference.** This is the
-  shape of the rubric in ZINC's assessment engine, whose level model this
+  shape of the rubric in ZINC v3 (hkust-contrib/zinc), whose level model this
   amendment otherwise follows. In this formula the component is already
   the unit that scores and that staff override, so a second block would
   split one criterion across two places.
