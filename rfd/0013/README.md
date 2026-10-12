@@ -1475,3 +1475,163 @@ amendment.
   file would reach every run, including files the parts rejected and
   files staff committed as unmatched. Staging only the matched files
   keeps the workspace equal to the stamped record.
+
+### 2026-10-12: Components scored by a level staff pick
+
+State: proposed. Discussion:
+[#20](https://github.com/zinc-sig/affairs/pull/20). Not implemented.
+
+Affects [Component block](#component-block), [Validate
+phase](#validate-phase-schema-only), [Runtime evaluation
+errors](#runtime-evaluation-errors-during-formula-evaluation), and the
+pipeline config's [Top-level structure](#top-level-structure) (the number
+of pipelines).
+
+#### Problem
+
+The body gives a component one way to score: a `score` expression over
+pipeline results. Work that a person has to judge, such as an essay or a
+report, has no place in it. Core fills the gap with two mechanisms the body
+does not describe:
+
+- a per-component staff override, stored per delivery, whose number reaches
+  the formula through a reserved `manual` namespace (`manual["<component>"]`,
+  in scope only in a component's `score`);
+- generated exam formulas that give each essay a manual-only component,
+  `score = try(manual["<qid>"], 0)`.
+
+This leaves three problems:
+
+- **No shared scale.** A marker types any number from 0 to `max_score`.
+  Two markers marking the same essay have nothing to agree on but the
+  number.
+- **Silent zero.** An essay nobody has marked scores 0 and the delivery
+  reads as graded, which is the silent zero the hard-fail rule and the
+  2026-10-02 amendment exist to prevent.
+- **Upload assignments cannot be marked.** Core refuses an override on an
+  activity with no examination document, so an upload assignment has no
+  way to take a staff-judged mark at all.
+
+A paper made only of essays also has nothing to run: its pipeline config
+declares no pipelines, which the body forbids, and the grading run stops
+before it evaluates the formula.
+
+#### Change
+
+**Level blocks.** A component declares either a `score` expression or
+`level` blocks, never both:
+
+```hcl
+component "q7" {
+  covers    = ["q7"]
+  title     = "Essay: feedback loops"
+  max_score = 10
+  level "missing" {
+    points      = 0
+    description = "No relevant argument."
+  }
+  level "partial" {
+    points      = 5
+    description = "Explains the loop but not the response to disturbance."
+  }
+  level "complete" {
+    points      = 10
+    description = "Explains the loop and both responses."
+  }
+}
+```
+
+- The label is the level id (`[a-zA-Z0-9_-]+`). Ids are unique within the
+  component, compared without case.
+- A level component has at least two levels.
+- `points` is a parse-phase expression, like `max_score`: it may read
+  `local.*` and `document.*`, not `pipeline.*` or `manual`. Its value lies
+  in `[0, max_score]`. Lint checks literals; a value outside the range at
+  evaluation ungrades the component rather than clamping it.
+- `description` is required. Levels display in declaration order.
+- `min_score` is refused on a level component; `weight`, `covers` and
+  `title` mean what they mean on any component.
+- Lint warns when no level reaches `max_score`.
+- `level` blocks are allowed in static components only, not inside
+  `dynamic "component"` content.
+
+Several criteria for one question are several level components with the
+same `covers`.
+
+**Picks.** Staff pick a level for a delivery's level component through the
+same per-component override that carries a number today. A level component
+accepts only a pick, and any other component only a number. The `manual`
+namespace is unchanged; a level component has no `score` expression and
+does not read it.
+
+**Evaluation.** A level component scores as follows:
+
+| Stored override | Component |
+| --- | --- |
+| A pick of a declared level | Scores that level's `points` |
+| A pick of a level the formula no longer declares | Ungraded, code `level_unknown` |
+| A number (the component used to have a `score`) | Treated as no pick |
+| None | Ungraded, code `level_pending` |
+
+A pick stored for a component that now has a `score` expression is
+ignored, and the expression scores as usual.
+
+The ungraded diagnostic carries a `code`: `level_pending`, `level_unknown`
+or `level_invalid` (points out of range). As for any ungraded component,
+the delivery is ungraded, `scoring.total` is not evaluated, and the
+components that did evaluate keep their scores in the breakdown. A reader
+shows a `level_pending` component as awaiting a grade, not as a failure.
+
+**Guard.** An override, or a rescore, that would replace a graded score
+with an ungraded one is refused, unless every ungraded component is
+`level_pending`. So marking one of several essays, marking the last one,
+and removing the only pick are all accepted; an override that breaks the
+formula is refused, as before.
+
+**Activities with no paper.** Overrides and picks apply to any activity
+with a formula, with or without an examination document.
+
+**Pipeline configs with no pipelines.** A pipeline config may declare no
+`pipeline` blocks. Its grading run dispatches nothing and evaluates the
+formula directly, so a paper made only of essays gets a score row at
+grading time.
+
+#### Effect on stored configs and scores
+
+- A formula without `level` blocks behaves as before.
+- Generated exam formulas emit a level component for an essay only when
+  its marking scheme declares levels; other essays keep the manual-only
+  form. Nothing is backfilled.
+- A formula edit does not re-score. A change to a level's `points` reaches
+  a delivery at its next grade, rescore or override.
+- Picks belong to a delivery and do not carry over to a resubmission. With
+  `score_selection = "best"` an earlier graded attempt stays of record;
+  with `"latest"` the new attempt is of record and waits for its picks.
+
+#### Implementation
+
+Not started. Core changes the formula spec, lint and evaluation
+(`internal/pipeline`), the override table and the three score writers
+(`internal/api/report`: grading fan-in, rescore, override), the grading
+workflow's no-pipeline path behind a workflow version marker, and the
+exam formula generator (`internal/pipeline/configgen`). The console adds a
+level picker to the override.
+
+#### Alternatives considered
+
+- **A separate `rubric` block that components reference.** This is the
+  shape of the rubric in ZINC's assessment engine, whose level model this
+  amendment otherwise follows. In this formula the component is already
+  the unit that scores and that staff override, so a second block would
+  split one criterion across two places.
+- **A rubric document visible to the pipeline**, like `document.examination`
+  with points carved out. It is needed only if judging runs inside the
+  pipeline. It does not: staff pick levels through the override, and the
+  pipeline stays score-blind.
+- **Score an unpicked level component 0.** This is the essay's behaviour
+  today. A release before marking shows students a total with a silent 0.
+- **Allow a number on a level component.** This defeats the shared scale;
+  a missing step belongs in the levels.
+- **Pick a level from pipeline results with an expression.** A `score`
+  expression already does this. Keeping picks to staff keeps every level a
+  recorded decision with a marker.
