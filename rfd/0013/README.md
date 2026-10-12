@@ -1551,11 +1551,11 @@ component "q7" {
 - The label is the level id (`[a-zA-Z0-9_-]+`). Ids are unique within the
   component, compared without case.
 - A level component has at least two levels.
-- `points` is a parse-phase expression: it may read `local.*` and
-  `document.*`, not `pipeline.*` or `manual` (stricter than `max_score`,
-  which tolerates `manual`). Its value lies in `[0, max_score]`. The
-  validate phase checks literals; a value outside the range at evaluation
-  ungrades the component rather than clamping it.
+- `points` is a parse-phase expression that may read `local.*` and
+  `document.*` but not `pipeline.*` or `manual`. This is stricter than
+  `max_score`, which tolerates `manual`. Its value lies in
+  `[0, max_score]`. The validate phase checks literals; a value outside
+  the range at evaluation ungrades the component rather than clamping it.
 - `description` is required. Levels display in declaration order.
 - `min_score` is refused on a level component; `weight`, `covers` and
   `title` mean what they mean on any component.
@@ -1587,7 +1587,7 @@ breakdown flags the stored override as stale, so staff can see why it no
 longer counts.
 
 The ungraded diagnostic carries a `code`: `level_pending`, `level_unknown`
-or `level_invalid` (points out of range). As for any ungraded component,
+or `level_invalid`. The last marks `points` outside `[0, max_score]`. As for any ungraded component,
 the delivery is ungraded, `scoring.total` is not evaluated, and the
 components that did evaluate keep their scores in the breakdown. A reader
 shows a `level_pending` component as awaiting a grade, not as a failure.
