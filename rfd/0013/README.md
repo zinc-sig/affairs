@@ -1051,8 +1051,8 @@ body disagree, the amendment is authoritative.
 ### 2026-09-28: Dependencies gate by scenario code
 
 State: proposed. Discussion:
-[#20](https://github.com/zinc-sig/affairs/pull/20). The runtime applies
-the body's whole-stage gating until this amendment is implemented.
+[#20](https://github.com/zinc-sig/affairs/pull/20). Implemented in core
+by [zinc-sig/core#623](https://github.com/zinc-sig/core/pull/623).
 
 Affects [Stage block](#stage-block), [Field
 definitions](#field-definitions) (`skipped`), and [Validate-phase
@@ -1239,7 +1239,9 @@ In core:
 
 State: proposed. Discussion:
 [#20](https://github.com/zinc-sig/affairs/pull/20), first opened as
-[#22](https://github.com/zinc-sig/affairs/pull/22).
+[#22](https://github.com/zinc-sig/affairs/pull/22). Implemented in core by
+[zinc-sig/core#640](https://github.com/zinc-sig/core/pull/640) and in the
+console by [zinc-sig/ui#564](https://github.com/zinc-sig/ui/pull/564).
 
 Affects [`pipeline.<name>.scenarios` schema](#pipelinenamescenarios-schema)
 (missing-key semantics, heterogeneous keys, empty pipelines), [HCL
