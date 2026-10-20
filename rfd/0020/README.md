@@ -150,6 +150,16 @@ suggests, and the secret rules below depend on that:
   job and the settings write. Branding assets are few and small, so deletion
   from the settings page is enough. A setting whose assets accumulate can
   add the sweep.
+- **A favicon derived from the logo.** A logo may be up to four times as
+  wide as it is high, and a favicon is square. Deriving one from the other
+  would also change the tab icon whenever an administrator changes the
+  logo, which prevents an instance from showing the CoBE mark in the top
+  bar and the institution's crest in the tab.
+- **An institution logo shown beside the institution name.** It adds a
+  layout to the top bar and the pages without a session. The favicon can
+  carry the institution's mark, so the first set names the institution in
+  text, and an institution logo can be added later as one more asset
+  setting.
 - **One display string for the product and the institution**, such as
   "CoBE · HKUST CSE". The top bar sets the two names in different type, and
   page titles use the product name alone. A client cannot split one string
@@ -464,7 +474,7 @@ favicon loads on every page. Both cases need the settings before login.
 - **The institution name** appears beside the product name in the top bar,
   in a smaller secondary style, and on the pages that render without a
   session. An instance that keeps the product name shows both names.
-- **The logo** is the product's mark. It appears before the product name in
+- **The logo** is the top-bar mark. It appears before the product name in
   the top bar, in the About dialog, and on the pages that render without a
   session. While the dark theme is active, the client shows `logo_dark`, or
   `logo` if no dark asset is assigned. The exam client's top bar shows the
@@ -475,8 +485,13 @@ favicon loads on every page. Both cases need the settings before login.
   offer it where their text tells a user to contact support. If it is the
   empty string, the clients show no help link.
 
-The product name, the logo, and the favicon together are the product's
-identity, and their defaults are CoBE's. The institution is named in text.
+Each image setting is named by where the image appears, and each has its own
+default. Any combination is valid: an instance may keep the CoBE mark in the
+top bar and show the institution's crest as the favicon, or replace both.
+Setting one image never changes another, because a logo may be up to four
+times as wide as it is high and a favicon is square. One asset may fill
+several settings, so a crest uploaded once can serve as the favicon and
+later as the logo. The institution is named in text.
 
 The default artwork is the CoBE mark and icon, and each client bundles its
 own copy. For an undecided `logo` or `favicon`, `GET /v1/instance` returns
@@ -488,9 +503,9 @@ the same bundled copy.
 ### The product name
 
 An institution may replace the product name. An institution that replaces
-it usually replaces the logo and the favicon too; otherwise the CoBE mark
-stands beside a different name. The settings page groups the three so that
-an administrator sees them together. Two rules keep the interface
+it usually replaces the logo too; otherwise the CoBE mark stands beside a
+different name. The settings page previews the top bar, so an administrator
+sees the combination before saving it. Two rules keep the interface
 consistent across instances and keep a renamed instance traceable in
 support:
 
@@ -589,9 +604,6 @@ move to an owner-held key.
    grading container? This decides whether the pipeline extension runs a
    gateway, and belongs to the agentic grading design; rule 6 of the secrets
    section constrains both answers.
-6. Institution mark: does an instance need an image for the institution,
-   shown beside the product's mark, as a separate setting? The first set
-   names the institution in text.
 
 ## Decision status
 
@@ -615,7 +627,8 @@ move to an owner-held key.
 | Institution shown beside the product name, which an institution may replace | decided |
 | The About dialog names the software for any product name | proposed |
 | Interface copy names features without the product name | decided |
-| Logo and favicon are the product's, defaulting to the CoBE artwork that each client bundles | proposed |
+| Image settings named by placement, each defaulting to the CoBE artwork that each client bundles | decided |
+| No institution logo setting in the first set; the favicon may carry the institution's mark | decided |
 | An empty support link hides the help link | decided |
 | Desktop build profiles gain an optional product name for the displayed application name | decided |
 
@@ -655,9 +668,10 @@ have no counterpart in deployment config.
   by owner. Each entry shows the value, the default, whether it was changed,
   who changed it and when, and the ceiling where one applies. A reset action
   deletes the row.
-- **Branding** is grouped into the product's identity (product name, logo,
-  dark logo, and favicon) and the institution (institution name and support
-  link).
+- **Branding** is grouped by where each setting appears: names (product
+  name and institution name), the top bar (logo and dark logo), the browser
+  tab (favicon), and help (support link). Each group shows a preview of the
+  place it changes.
 - **Asset settings** show the assigned asset beside the default artwork, an
   upload control, the earlier uploads to choose from, and the reset action.
   An earlier upload that no setting uses has a delete action. The console previews a chosen file
