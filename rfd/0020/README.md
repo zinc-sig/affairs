@@ -362,7 +362,10 @@ guarantees that every process converges.
   `Cache-Control: public, max-age=10`, the expiry of the core's cache.
 - **A client server that renders pages** may cache `GET /v1/instance` for
   the same expiry as the core's loader, so that rendering a page does not
-  add a request to the core.
+  add a request to the core. The console and the exam client serve an
+  expired entry while they refresh it, keep the last good response when a
+  refresh fails, and use the default branding when they have no response.
+  A failed read therefore never fails a page.
 
 ## Assets
 
@@ -512,11 +515,16 @@ favicon loads on every page. Both cases need the settings before login.
 - **The institution name** appears beside the product name in the top bar,
   in a smaller secondary style, and on the pages that render without a
   session. An instance that keeps the product name shows both names.
-- **The logo** is the top-bar mark. It appears before the product name in
+- **The logo** is the product's mark. It appears before the product name in
   the top bar, in the About dialog, and on the pages that render without a
-  session. While the dark theme is active, the client shows `logo_dark`, or
-  `logo` if no dark asset is assigned. The exam client's top bar shows the
-  examination and carries no branding.
+  session. The client picks the image by the surface it sits on, not by the
+  page theme. `logo` is the mark for light backgrounds and `logo_dark` the
+  mark for dark backgrounds. The top bar is dark in both themes, so it shows
+  `logo_dark`, then `logo`, then the CoBE mark. The About dialog follows the
+  page theme: `logo` in the light theme, and `logo_dark`, then `logo`, in
+  the dark theme. The settings page labels `logo_dark` "Logo on dark
+  backgrounds". The exam client's top bar shows the examination and carries
+  no branding.
 - **The favicon** is the browser tab icon and the touch icon on every page
   of both clients.
 - **The support link** is the help link in the About dialog, and the clients
@@ -562,7 +570,10 @@ desktop build profile gains an optional product name, so an institution that
 renames the product builds an application with the same name. The profile
 changes the name the application displays. The application identity that
 updates rely on stays per release channel. The profile is part of the desktop
-build and is not an instance setting.
+build and is not an instance setting. On macOS the bundle name is part of
+that identity, so the Dock, the menu bar, Finder, and the system's
+permission prompts keep the CoBE name on a renamed build. Window and dialog
+titles, notices, and the disk image's title use the profile's name.
 
 Branding makes a small first set. It has no ceiling, every value the
 validators accept is safe on a live instance, and no extension reads it. It
@@ -707,13 +718,16 @@ have no counterpart in deployment config.
   who changed it and when, and the ceiling where one applies. A reset action
   deletes the row.
 - **Branding** is grouped by where each setting appears: names (product
-  name and institution name), the top bar (logo and dark logo), the browser
-  tab (favicon), and help (support link). Each group shows a preview of the
-  place it changes.
+  name and institution name), the top bar (logo and logo on dark
+  backgrounds), the browser tab (favicon), and help (support link). Each
+  group shows a preview of the place it changes, and each image previews on
+  the surface it serves.
 - **Asset settings** show the assigned asset beside the default artwork, an
-  upload control, the earlier uploads to choose from, and the reset action.
-  An earlier upload that no setting uses has a delete action. The console previews a chosen file
-  before it uploads it, and assigns the asset once the upload returns.
+  upload control, the earlier uploads that fit the setting's constraints,
+  and the reset action. The console previews a chosen file before it
+  uploads it, and assigns the asset once the upload returns.
+- **Uploads** are listed once on the settings page, each with the settings
+  that use it. An upload that no setting uses has a delete action there.
 - **Clients before login** read `GET /v1/instance` for the public subset,
   including the branding settings, and load assets from the asset read
   route.
