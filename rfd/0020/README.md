@@ -414,9 +414,13 @@ CREATE TABLE core.instance_asset (
    when the upload creates the asset and 200 when identical bytes are
    already stored.
 
-The upload and the deletion of one asset both lock its row. A deletion
-therefore cannot remove the object of an asset that an upload is storing
-again. An upload of bytes whose row exists stores the object again, which
+The upload and the deletion of one asset first take a transaction lock on
+its hash, which exists whether or not the row does. Uploads and deletions
+of one hash therefore run one at a time, and a deletion cannot remove the
+object of an asset that an upload is storing. The settings write never
+takes this lock, so the order of locks stays free of cycles. Object storage
+calls inside these transactions have a time bound, because the transaction
+holds its locks and a database connection until the call returns. An upload of bytes whose row exists stores the object again, which
 also restores an object that is missing.
 
 The upload writes no setting. Vector formats are rejected because an SVG can
