@@ -1,6 +1,6 @@
 ---
 authors: Thomas Li
-state: prediscussion
+state: discussion
 discussion: "[#21](https://github.com/zinc-sig/affairs/pull/21)"
 labels: direction, platform
 ---
@@ -145,6 +145,11 @@ suggests, and the secret rules below depend on that:
   parameter. A request with an outdated parameter would need its own
   handling. A route keyed by hash returns the same bytes for every request,
   so every response is immutable.
+- **A periodic sweep that deletes unused assets after a retention period.**
+  It needs a timestamp per asset, a background job, and locking between the
+  job and the settings write. Branding assets are few and small, so deletion
+  from the settings page is enough. A setting whose assets accumulate can
+  add the sweep.
 - **One display string for the product and the institution**, such as
   "CoBE · HKUST CSE". The top bar sets the two names in different type, and
   page titles use the product name alone. A client cannot split one string
@@ -351,17 +356,16 @@ CREATE TABLE core.instance_asset (
     height      INTEGER NOT NULL,
     size        INTEGER NOT NULL,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_by  INTEGER REFERENCES core."user"(id) ON DELETE SET NULL,
-    released_at TIMESTAMPTZ
+    created_by  INTEGER REFERENCES core."user"(id) ON DELETE SET NULL
 );
 ```
 
 - **`sha256`** is the hash of the stored bytes and the asset's identity. The
-  object key is derived from it as `instance-assets/<sha256>.png`, so the row
-  does not store the key. Uploading identical bytes twice yields one row.
-- **`released_at`** holds the time since which no setting refers to the
-  asset, and is null while a setting refers to it. The retention sweep reads
-  it.
+  object key is derived from it as `<sha256>.png`, so the row does not store
+  the key. Uploading identical bytes twice yields one row.
+- The objects live in a bucket of their own, named in the core's config with
+  the default `instance-assets`, as recordings and submission exports have
+  theirs.
 
 ### Upload
 
@@ -374,9 +378,8 @@ CREATE TABLE core.instance_asset (
 3. It rejects an image wider or taller than 2048 pixels.
 4. It re-encodes the decoded image as PNG. The stored bytes are then a plain
    raster with no metadata, and the hash describes the bytes that are served.
-5. It writes the object, then the row with `released_at` set to the time of
-   the upload, and returns the asset descriptor: `sha256`, `media_type`,
-   `width`, `height`, and `size`.
+5. It writes the object, then the row, and returns the asset descriptor:
+   `sha256`, `media_type`, `width`, `height`, and `size`.
 
 The upload writes no setting. Vector formats are rejected because an SVG can
 carry script, and the first settings do not need one.
@@ -395,10 +398,9 @@ validator checks that the asset row exists and meets the setting's
 constraints. It reads a core table and calls no extension, so the core still
 validates the setting alone.
 
-In the transaction that writes the settings row, the core locks the assigned
-asset row and clears its `released_at`. If no other setting refers to the
-asset the setting held before, the core sets that asset's `released_at`. A
-`DELETE` of the setting does the second step only.
+In the transaction that writes the settings row, the core takes a share lock
+on the assigned asset row. A deletion of that asset then waits for the write
+to commit and sees the reference.
 
 ### Asset reads
 
@@ -406,8 +408,8 @@ asset the setting held before, the core sets that asset's `released_at`. A
   descriptor and the path of the read route, or null when no asset is
   assigned. For null, a client shows its own built-in artwork. That artwork
   belongs to the client, and the core has no copy of it.
-- **`GET /v1/instance/assets/{sha256}`** serves an asset to anyone, including
-  unauthenticated clients. The core streams the bytes from object storage,
+- **`GET /v1/instance/assets/{sha256}`** serves an asset whose row exists to
+  anyone, including unauthenticated clients. The core streams the bytes from object storage,
   as it does for pipeline result artifacts and proctoring recordings. The
   URL names the content, so the response carries
   `Cache-Control: public, max-age=31536000, immutable`. It also carries
@@ -417,19 +419,25 @@ asset the setting held before, the core sets that asset's `released_at`. A
 Every asset is public. A file for a private setting needs an access check on
 the read route and is outside this RFD.
 
-### Retention
+### Listing and deleting assets
 
-A periodic sweep in the core deletes asset rows whose `released_at` is older
-than the retention period, proposed at seven days, and then removes their
-objects. The retention period covers two cases: an upload that has not yet
-been assigned, and a page rendered before a change that still refers to the
-asset it replaced.
+An asset is kept until an administrator deletes it. Branding assets are few
+and small, and they change rarely, so the storage they take stays small.
 
-The sweep deletes a row in a transaction that locks it and rechecks
-`released_at`, so an assignment and a deletion of one asset cannot both
-succeed. If removing an object fails, the object remains with no row. On its
-next run the sweep lists the `instance-assets/` prefix and removes objects
-that have no row.
+- **`GET /v1/settings/assets`** lists every asset with its descriptor,
+  `created_at`, `created_by`, and the settings that refer to it. It requires
+  `system#admin`. The settings page offers earlier uploads from this list,
+  so an administrator can return to a previous logo without uploading it
+  again.
+- **`DELETE /v1/settings/assets/{sha256}`** deletes an asset that no setting
+  refers to, and returns 409 for an asset that a setting refers to. It
+  requires `system#admin`. The core deletes the row in a transaction that
+  locks it and checks for references, then removes the object. If removing
+  the object fails, the object remains with no row, and the read route does
+  not serve it.
+
+A page rendered before a change keeps working, because the asset it refers
+to stays until an administrator deletes it.
 
 ## Branding settings
 
@@ -584,9 +592,7 @@ move to an owner-held key.
    section constrains both answers.
 7. Asset formats: are raster formats enough, or does a logo that must stay
    sharp at every size need a sanitised SVG?
-8. Asset retention: is seven days long enough for an upload to be assigned
-   and for pages rendered before a change to be closed?
-9. Institution mark: does an instance need an image for the institution,
+8. Institution mark: does an instance need an image for the institution,
    shown beside the product's mark, as a separate setting? The first set
    names the institution in text.
 
@@ -607,6 +613,7 @@ move to an owner-held key.
 | Upload separate from assignment, assignment through the settings write | proposed |
 | Public, immutable asset read route that the core streams | proposed |
 | Raster formats, re-encoded as PNG | proposed |
+| Assets kept until an administrator deletes one, with no automatic sweep | proposed |
 | Branding (product name, institution name, logo, dark logo, favicon, support link) as the first settings | proposed |
 | Institution shown beside the product name, which an institution may replace | proposed |
 | The About dialog names the software for any product name | proposed |
@@ -623,8 +630,8 @@ move to an owner-held key.
 3. The core's logistics module serves the write routes and the administrator
    reads, and publishes the notification. `GET /v1/instance` serves the
    public subset.
-4. The core serves the asset upload and read routes, declares the asset
-   reference type with its write step, and runs the retention sweep.
+4. The core serves the asset upload, list, delete, and read routes, and
+   declares the asset reference type with its share lock on assignment.
 5. Each process registers the loader and subscribes to the notification at
    startup.
 6. The SDK and `zincli` gain the settings and asset routes; the console gains
@@ -651,7 +658,8 @@ have no counterpart in deployment config.
   dark logo, and favicon) and the institution (institution name and support
   link).
 - **Asset settings** show the assigned asset beside the default artwork, an
-  upload control, and the reset action. The console previews a chosen file
+  upload control, the earlier uploads to choose from, and the reset action.
+  An earlier upload that no setting uses has a delete action. The console previews a chosen file
   before it uploads it, and assigns the asset once the upload returns.
 - **Clients before login** read `GET /v1/instance` for the public subset,
   including the branding settings, and load assets from the asset read
