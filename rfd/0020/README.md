@@ -416,7 +416,8 @@ CREATE TABLE core.instance_asset (
 
 The upload and the deletion of one asset both lock its row. A deletion
 therefore cannot remove the object of an asset that an upload is storing
-again.
+again. An upload of bytes whose row exists stores the object again, which
+also restores an object that is missing.
 
 The upload writes no setting. Vector formats are rejected because an SVG can
 carry script, and the first settings do not need one.
@@ -472,10 +473,12 @@ and small, and they change rarely, so the storage they take stays small.
   again.
 - **`DELETE /v1/settings/assets/{sha256}`** deletes an asset that no setting
   refers to, and returns 409 for an asset that a setting refers to. It
-  requires `system#admin`. The core deletes the row in a transaction that
-  locks it and checks for references, then removes the object. If removing
-  the object fails, the object remains with no row, and the read route does
-  not serve it.
+  requires `system#admin`. In one transaction the core locks the row,
+  checks for references, deletes the row, and removes the object. If
+  removing the object fails, the transaction rolls back and the row and the
+  object stay together. If the commit fails after the object is removed,
+  the core logs the inconsistency, and the read route answers 404 for that
+  asset until it is uploaded again.
 
 A page rendered before a change keeps working, because the asset it refers
 to stays until an administrator deletes it.
