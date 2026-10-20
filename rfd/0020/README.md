@@ -91,8 +91,10 @@ suggests, and the secret rules below depend on that:
    row in `core.instance_asset`, keyed by its content hash. A setting refers
    to an asset by its hash, and an administrator assigns it through the
    ordinary settings write.
-7. **Branding is the first set**: the site name, the logo, and the favicon,
-   owned by the core and public.
+7. **Branding is the first set**: the product name, the institution name,
+   the logo in two themes, the favicon, and the support link, owned by the
+   core and public. An institution may rename the product; the About dialog
+   names the software whatever the product name is.
 
 ### Abandoned ideas
 
@@ -143,6 +145,14 @@ suggests, and the secret rules below depend on that:
   parameter. A request with an outdated parameter would need its own
   handling. A route keyed by hash returns the same bytes for every request,
   so every response is immutable.
+- **One display string for the product and the institution**, such as
+  "CoBE · HKUST CSE". The top bar sets the two names in different type, and
+  page titles use the product name alone. A client cannot split one string
+  reliably.
+- **The product name inserted into feature copy.** Every string that names a
+  feature after the product would become a template, and every string added
+  later would have to follow the same rule. Copy that names the feature
+  itself reads correctly under any product name.
 
 ## Where a value belongs
 
@@ -213,7 +223,7 @@ it. A capacity value with no sensible ceiling stays deployment config.
 | Model provider API key, Entra directory connection | secret connection | 1 |
 | Default model, per-run token budget for agentic grading | instance setting, under a ceiling | 7 |
 | Sandbox session timeout | instance setting, under a ceiling | 7 |
-| Site name, support contact, login notice | instance setting, public | 7 |
+| Product name, institution name, support link, login notice | instance setting, public | 7 |
 | An uploaded logo or favicon file | domain data, an asset | 4 |
 | Which asset is the logo or the favicon | instance setting, public | 7 |
 | Default score visibility for new activities | instance setting, applied at creation | 7 |
@@ -370,7 +380,7 @@ carry script, and the first settings do not need one.
 A setting that holds an asset declares the asset reference type in
 `internal/systemsettings`. Its JSON value is `{"asset": "<sha256>"}`, and its
 constant default is no asset. Each such setting declares constraints on the
-asset, such as a square image of at least 32 pixels for a favicon.
+asset, such as a square image of at least 180 pixels for a favicon.
 
 An administrator assigns an asset through the ordinary settings write,
 `PUT /v1/settings/{owner}/{name}`. `If-Match`, `updated_by`, the change
@@ -417,19 +427,63 @@ that have no row.
 
 ## Branding settings
 
-The first settings are the instance's branding. A client needs them on the
-sign-in page before login, so all three are public. Their owner is `core`.
+The first settings are the instance's branding. Their owner is `core`, and
+all of them are public. The console and the exam client send a visitor
+without a session directly to the identity provider, so neither renders a
+sign-in page. Three console pages do render without a session: the
+signed-out page, the sign-in error page, and the device code entry page. The
+favicon loads on every page. Both cases need the settings before login.
 
 | Name | Type | Default | Constraints |
 |---|---|---|---|
-| `site_name` | string | the empty string | at most 60 characters |
+| `product_name` | string | `CoBE` | 1 to 24 characters |
+| `institution_name` | string | the empty string | at most 60 characters |
 | `logo` | asset reference | no asset | height at least 64 pixels, width at most four times the height |
-| `favicon` | asset reference | no asset | square, at least 32 pixels |
+| `logo_dark` | asset reference | no asset | the constraints of `logo` |
+| `favicon` | asset reference | no asset | square, at least 180 pixels |
+| `support_url` | string | the empty string | the empty string, or an absolute `https:` or `mailto:` URL |
 
-A client shows the site name in page titles and on the sign-in page, the
-logo in the top bar and on the sign-in page, and the favicon as the browser
-tab icon. For the empty string or no asset, the client shows the product's
-own name and artwork.
+### Where a client shows them
+
+- **The product name** is the wordmark in the top bar, the suffix of page
+  titles, and the label of the About button.
+- **The institution name** appears beside the product name in the top bar,
+  in a smaller secondary style, and on the pages that render without a
+  session. An instance that keeps the product name shows both names.
+- **The logo** appears beside the product mark in the top bar, in the About
+  dialog, and on the pages that render without a session. While the dark
+  theme is active, the client shows `logo_dark`, or `logo` if no dark asset
+  is assigned. The exam client's top bar shows the examination and carries
+  no branding.
+- **The favicon** is the browser tab icon and the touch icon on every page
+  of both clients.
+- **The support link** is the help link in the About dialog, and the clients
+  offer it where their text tells a user to contact support. If it is the
+  empty string, the About dialog links to the ZINC project.
+
+For an undecided setting, the client shows its own built-in name and
+artwork.
+
+### The product name
+
+An institution may replace the product name. Two rules keep the interface
+consistent across instances and keep a renamed instance traceable in
+support:
+
+- **Interface copy does not name a feature after the product.** Text such
+  as "Answer in CoBE" names the answering mode after the product, and on a
+  renamed instance it would show a name that appears nowhere else. Such text
+  names the mode itself, and the product name appears only in the places
+  listed above.
+- **The About dialog names the software.** For any product name, it states
+  that the instance runs CoBE and gives the version, the commit, and a link
+  to the ZINC project, so a screenshot in a bug report identifies the build.
+  This text is not a setting.
+
+The desktop application's name is fixed when its installer is built, per
+release channel. A renamed instance therefore still installs an application
+named after CoBE. Renaming it is a change to the desktop build profiles and
+is outside this RFD.
 
 Branding makes a small first set. It has no ceiling, every value the
 validators accept is safe on a live instance, and no extension reads it. It
@@ -502,9 +556,9 @@ move to an owner-held key.
    with any exception decided in an RFD?
 2. The ceiling rule: are capacity-related settings bounded by a ceiling in
    deployment config, or kept out of settings entirely?
-3. Branding layout: does the instance logo replace the CoBE mark in the top
-   bar and on the sign-in page, or appear beside it? The settings are the
-   same either way. The answer decides the clients' layout.
+3. Desktop application name: does a desktop build profile gain a product
+   name, so that an instance that renames the product also renames the
+   application its students install?
 4. The sealing key: authority-derived, or held by the owning extension?
 5. Secret scope: one connection per provider for the instance, or also
    connections owned by a school or a course?
@@ -534,7 +588,10 @@ move to an owner-held key.
 | Upload separate from assignment, assignment through the settings write | proposed |
 | Public, immutable asset read route that the core streams | proposed |
 | Raster formats, re-encoded as PNG | proposed |
-| Branding (site name, logo, favicon) as the first settings | proposed |
+| Branding (product name, institution name, logo, dark logo, favicon, support link) as the first settings | proposed |
+| Institution shown beside the product name, which an institution may replace | proposed |
+| The About dialog names the software for any product name | proposed |
+| Interface copy names features without the product name | proposed |
 
 ## Implementation
 
@@ -553,6 +610,9 @@ move to an owner-held key.
 6. The SDK and `zincli` gain the settings and asset routes; the console gains
    an instance settings page per owner, starting with branding. The console
    and the exam client read the branding settings in their root loaders.
+   Before the product name becomes configurable, the clients' copy that
+   names a feature after the product is reworded; that change does not
+   depend on the settings and can come first.
 7. The sealing code in `internal/entra` moves to a shared helper in
    `internal/crypto`, and the Entra connection uses it. The first secret
    connection beyond Entra is designed with agentic grading.
