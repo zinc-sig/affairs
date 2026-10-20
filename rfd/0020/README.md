@@ -153,6 +153,12 @@ suggests, and the secret rules below depend on that:
   feature after the product would become a template, and every string added
   later would have to follow the same rule. Copy that names the feature
   itself reads correctly under any product name.
+- **The default artwork as a built-in asset in the core**, served by the
+  asset read route. Every page would wait on a request to the core to show
+  the default mark, and a page rendered while the core is unreachable would
+  show none. The console and the exam client already bundle the artwork. A
+  third client needs its own copy; the desktop application has one in its
+  build profiles.
 
 ## Where a value belongs
 
@@ -438,9 +444,9 @@ favicon loads on every page. Both cases need the settings before login.
 |---|---|---|---|
 | `product_name` | string | `CoBE` | 1 to 24 characters |
 | `institution_name` | string | the empty string | at most 60 characters |
-| `logo` | asset reference | no asset | height at least 64 pixels, width at most four times the height |
-| `logo_dark` | asset reference | no asset | the constraints of `logo` |
-| `favicon` | asset reference | no asset | square, at least 180 pixels |
+| `logo` | asset reference | no asset, shown as the CoBE mark | height at least 64 pixels, width at most four times the height |
+| `logo_dark` | asset reference | no asset, shown as `logo` | the constraints of `logo` |
+| `favicon` | asset reference | no asset, shown as the CoBE icon | square, at least 180 pixels |
 | `support_url` | string | the empty string | the empty string, or an absolute `https:` or `mailto:` URL |
 
 ### Where a client shows them
@@ -450,23 +456,33 @@ favicon loads on every page. Both cases need the settings before login.
 - **The institution name** appears beside the product name in the top bar,
   in a smaller secondary style, and on the pages that render without a
   session. An instance that keeps the product name shows both names.
-- **The logo** appears beside the product mark in the top bar, in the About
-  dialog, and on the pages that render without a session. While the dark
-  theme is active, the client shows `logo_dark`, or `logo` if no dark asset
-  is assigned. The exam client's top bar shows the examination and carries
-  no branding.
+- **The logo** is the product's mark. It appears before the product name in
+  the top bar, in the About dialog, and on the pages that render without a
+  session. While the dark theme is active, the client shows `logo_dark`, or
+  `logo` if no dark asset is assigned. The exam client's top bar shows the
+  examination and carries no branding.
 - **The favicon** is the browser tab icon and the touch icon on every page
   of both clients.
 - **The support link** is the help link in the About dialog, and the clients
   offer it where their text tells a user to contact support. If it is the
   empty string, the About dialog links to the ZINC project.
 
-For an undecided setting, the client shows its own built-in name and
-artwork.
+The product name, the logo, and the favicon together are the product's
+identity, and their defaults are CoBE's. The institution is named in text.
+
+The default artwork is the CoBE mark and icon, and each client bundles its
+own copy. For an undecided `logo` or `favicon`, `GET /v1/instance` returns
+null and the client shows its bundled artwork. A page then renders the
+default with no request to the core, and the default still shows while the
+core is unreachable. The console's settings page previews the default from
+the same bundled copy.
 
 ### The product name
 
-An institution may replace the product name. Two rules keep the interface
+An institution may replace the product name. An institution that replaces
+it usually replaces the logo and the favicon too; otherwise the CoBE mark
+stands beside a different name. The settings page groups the three so that
+an administrator sees them together. Two rules keep the interface
 consistent across instances and keep a renamed instance traceable in
 support:
 
@@ -570,6 +586,9 @@ move to an owner-held key.
    sharp at every size need a sanitised SVG?
 8. Asset retention: is seven days long enough for an upload to be assigned
    and for pages rendered before a change to be closed?
+9. Institution mark: does an instance need an image for the institution,
+   shown beside the product's mark, as a separate setting? The first set
+   names the institution in text.
 
 ## Decision status
 
@@ -592,6 +611,7 @@ move to an owner-held key.
 | Institution shown beside the product name, which an institution may replace | proposed |
 | The About dialog names the software for any product name | proposed |
 | Interface copy names features without the product name | proposed |
+| Logo and favicon are the product's, defaulting to the CoBE artwork that each client bundles | proposed |
 
 ## Implementation
 
@@ -627,6 +647,9 @@ have no counterpart in deployment config.
   by owner. Each entry shows the value, the default, whether it was changed,
   who changed it and when, and the ceiling where one applies. A reset action
   deletes the row.
+- **Branding** is grouped into the product's identity (product name, logo,
+  dark logo, and favicon) and the institution (institution name and support
+  link).
 - **Asset settings** show the assigned asset beside the default artwork, an
   upload control, and the reset action. The console previews a chosen file
   before it uploads it, and assigns the asset once the upload returns.
