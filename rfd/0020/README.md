@@ -473,7 +473,7 @@ favicon loads on every page. Both cases need the settings before login.
   of both clients.
 - **The support link** is the help link in the About dialog, and the clients
   offer it where their text tells a user to contact support. If it is the
-  empty string, the About dialog links to the ZINC project.
+  empty string, the clients show no help link.
 
 The product name, the logo, and the favicon together are the product's
 identity, and their defaults are CoBE's. The institution is named in text.
@@ -504,10 +504,12 @@ support:
   to the ZINC project, so a screenshot in a bug report identifies the build.
   This text is not a setting.
 
-The desktop application's name is fixed when its installer is built, per
-release channel. A renamed instance therefore still installs an application
-named after CoBE. Renaming it is a change to the desktop build profiles and
-is outside this RFD.
+The desktop application's name is fixed when its installer is built. Each
+desktop build profile gains an optional product name, so an institution that
+renames the product builds an application with the same name. The profile
+changes the name the application displays. The application identity that
+updates rely on stays per release channel. The profile is part of the desktop
+build and is not an instance setting.
 
 Branding makes a small first set. It has no ceiling, every value the
 validators accept is safe on a live instance, and no extension reads it. It
@@ -580,19 +582,14 @@ move to an owner-held key.
    with any exception decided in an RFD?
 2. The ceiling rule: are capacity-related settings bounded by a ceiling in
    deployment config, or kept out of settings entirely?
-3. Desktop application name: does a desktop build profile gain a product
-   name, so that an instance that renames the product also renames the
-   application its students install?
-4. The sealing key: authority-derived, or held by the owning extension?
-5. Secret scope: one connection per provider for the instance, or also
+3. The sealing key: authority-derived, or held by the owning extension?
+4. Secret scope: one connection per provider for the instance, or also
    connections owned by a school or a course?
-6. Agentic grading: does the agent loop run in the pipeline worker or in the
+5. Agentic grading: does the agent loop run in the pipeline worker or in the
    grading container? This decides whether the pipeline extension runs a
    gateway, and belongs to the agentic grading design; rule 6 of the secrets
    section constrains both answers.
-7. Asset formats: are raster formats enough, or does a logo that must stay
-   sharp at every size need a sanitised SVG?
-8. Institution mark: does an instance need an image for the institution,
+6. Institution mark: does an instance need an image for the institution,
    shown beside the product's mark, as a separate setting? The first set
    names the institution in text.
 
@@ -612,13 +609,15 @@ move to an owner-held key.
 | Uploaded files as assets in `core.instance_asset`, referred to by content hash | proposed |
 | Upload separate from assignment, assignment through the settings write | proposed |
 | Public, immutable asset read route that the core streams | proposed |
-| Raster formats, re-encoded as PNG | proposed |
-| Assets kept until an administrator deletes one, with no automatic sweep | proposed |
+| Raster formats, re-encoded as PNG | decided |
+| Assets kept until an administrator deletes one, with no automatic sweep | decided |
 | Branding (product name, institution name, logo, dark logo, favicon, support link) as the first settings | proposed |
-| Institution shown beside the product name, which an institution may replace | proposed |
+| Institution shown beside the product name, which an institution may replace | decided |
 | The About dialog names the software for any product name | proposed |
-| Interface copy names features without the product name | proposed |
+| Interface copy names features without the product name | decided |
 | Logo and favicon are the product's, defaulting to the CoBE artwork that each client bundles | proposed |
+| An empty support link hides the help link | decided |
+| Desktop build profiles gain an optional product name for the displayed application name | decided |
 
 ## Implementation
 
@@ -640,7 +639,9 @@ move to an owner-held key.
    Before the product name becomes configurable, the clients' copy that
    names a feature after the product is reworded; that change does not
    depend on the settings and can come first.
-7. The sealing code in `internal/entra` moves to a shared helper in
+7. The desktop build profiles gain an optional product name, used for the
+   window title, the notices, and the installer's displayed name.
+8. The sealing code in `internal/entra` moves to a shared helper in
    `internal/crypto`, and the Entra connection uses it. The first secret
    connection beyond Entra is designed with agentic grading.
 
