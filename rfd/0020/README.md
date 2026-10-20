@@ -87,6 +87,12 @@ suggests, and the secret rules below depend on that:
    the owning service's schema, sealed, written through a write-only API, and
    decrypted only by the owning service. A secret is never passed to a
    process that runs or reads untrusted content.
+6. **Files are assets.** An uploaded file is stored in object storage with a
+   row in `core.instance_asset`, keyed by its content hash. A setting refers
+   to an asset by its hash, and an administrator assigns it through the
+   ordinary settings write.
+7. **Branding is the first set**: the site name, the logo, and the favicon,
+   owned by the core and public.
 
 ### Abandoned ideas
 
@@ -120,6 +126,23 @@ suggests, and the secret rules below depend on that:
   process means rebuilding its pools and workers while requests are in
   flight. A restart does the same with fewer failure modes, and the
   deployment tooling performs it.
+- **Asset bytes in the setting's JSON value.** Every process caches the whole
+  settings table, and the administrator read returns every value. A logo
+  encoded into a row would be held by every process and copied into every
+  administrator read and every database dump.
+- **An upload route that also writes the setting.** It is a second write path
+  beside `PUT /v1/settings/{owner}/{name}`, and it would need its own
+  `If-Match`, `updated_by`, and change notification. The generic route would
+  still accept an asset reference, so its validator would have to check the
+  asset table anyway. Separating upload from assignment makes that validator
+  the one check.
+- **Presigned object storage URLs for asset reads.** The object store is not
+  reachable from browsers in every deployment, and a presigned URL expires,
+  which conflicts with an immutable cache lifetime.
+- **An asset read route keyed by setting name**, with the hash as a cache
+  parameter. A request with an outdated parameter would need its own
+  handling. A route keyed by hash returns the same bytes for every request,
+  so every response is immutable.
 
 ## Where a value belongs
 
@@ -191,6 +214,8 @@ it. A capacity value with no sensible ceiling stays deployment config.
 | Default model, per-run token budget for agentic grading | instance setting, under a ceiling | 7 |
 | Sandbox session timeout | instance setting, under a ceiling | 7 |
 | Site name, support contact, login notice | instance setting, public | 7 |
+| An uploaded logo or favicon file | domain data, an asset | 4 |
+| Which asset is the logo or the favicon | instance setting, public | 7 |
 | Default score visibility for new activities | instance setting, applied at creation | 7 |
 | Proctoring policy of an activity | activity settings | 3 |
 | Academic terms | domain data | 4 |
@@ -287,6 +312,129 @@ guarantees that every process converges.
 - **Everyone, including unauthenticated clients,** reads the public subset
   through `GET /v1/instance`, which describes the instance to a client
   before login. It carries only settings their owner declared public.
+- **A client server that renders pages** may cache `GET /v1/instance` for
+  the same expiry as the core's loader, so that rendering a page does not
+  add a request to the core.
+
+## Assets
+
+An **asset** is a file that an administrator uploads for a setting to refer
+to, such as a logo. Under the Where a value belongs section, an asset is
+domain data: there can be many, each with an identity and a lifecycle, so it
+has its own table. Which asset the instance uses as its logo is a decision,
+so it is a setting whose value refers to the asset. The bytes live in object
+storage, and the settings table holds the reference alone.
+
+### The asset table
+
+```sql
+CREATE TABLE core.instance_asset (
+    sha256      TEXT PRIMARY KEY,
+    media_type  TEXT NOT NULL,
+    width       INTEGER NOT NULL,
+    height      INTEGER NOT NULL,
+    size        INTEGER NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_by  INTEGER REFERENCES core."user"(id) ON DELETE SET NULL,
+    released_at TIMESTAMPTZ
+);
+```
+
+- **`sha256`** is the hash of the stored bytes and the asset's identity. The
+  object key is derived from it as `instance-assets/<sha256>.png`, so the row
+  does not store the key. Uploading identical bytes twice yields one row.
+- **`released_at`** holds the time since which no setting refers to the
+  asset, and is null while a setting refers to it. The retention sweep reads
+  it.
+
+### Upload
+
+`POST /v1/settings/assets` takes the file as the request body and requires
+`system#admin`. The core processes it in these steps:
+
+1. It reads at most 1 MiB and rejects a larger body.
+2. It decodes the body as PNG, JPEG, or WebP. The format is judged from the
+   bytes, and the `Content-Type` header is ignored.
+3. It rejects an image wider or taller than 2048 pixels.
+4. It re-encodes the decoded image as PNG. The stored bytes are then a plain
+   raster with no metadata, and the hash describes the bytes that are served.
+5. It writes the object, then the row with `released_at` set to the time of
+   the upload, and returns the asset descriptor: `sha256`, `media_type`,
+   `width`, `height`, and `size`.
+
+The upload writes no setting. Vector formats are rejected because an SVG can
+carry script, and the first settings do not need one.
+
+### Asset references in settings
+
+A setting that holds an asset declares the asset reference type in
+`internal/systemsettings`. Its JSON value is `{"asset": "<sha256>"}`, and its
+constant default is no asset. Each such setting declares constraints on the
+asset, such as a square image of at least 32 pixels for a favicon.
+
+An administrator assigns an asset through the ordinary settings write,
+`PUT /v1/settings/{owner}/{name}`. `If-Match`, `updated_by`, the change
+notification, and `DELETE` to restore the default apply unchanged. The
+validator checks that the asset row exists and meets the setting's
+constraints. It reads a core table and calls no extension, so the core still
+validates the setting alone.
+
+In the transaction that writes the settings row, the core locks the assigned
+asset row and clears its `released_at`. If no other setting refers to the
+asset the setting held before, the core sets that asset's `released_at`. A
+`DELETE` of the setting does the second step only.
+
+### Asset reads
+
+- **`GET /v1/instance`** carries, for each public asset setting, the asset
+  descriptor and the path of the read route, or null when no asset is
+  assigned. For null, a client shows its own built-in artwork. That artwork
+  belongs to the client, and the core has no copy of it.
+- **`GET /v1/instance/assets/{sha256}`** serves an asset to anyone, including
+  unauthenticated clients. The core streams the bytes from object storage,
+  as it does for pipeline result artifacts and proctoring recordings. The
+  URL names the content, so the response carries
+  `Cache-Control: public, max-age=31536000, immutable`. It also carries
+  `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`,
+  so that opening the URL directly runs nothing.
+
+Every asset is public. A file for a private setting needs an access check on
+the read route and is outside this RFD.
+
+### Retention
+
+A periodic sweep in the core deletes asset rows whose `released_at` is older
+than the retention period, proposed at seven days, and then removes their
+objects. The retention period covers two cases: an upload that has not yet
+been assigned, and a page rendered before a change that still refers to the
+asset it replaced.
+
+The sweep deletes a row in a transaction that locks it and rechecks
+`released_at`, so an assignment and a deletion of one asset cannot both
+succeed. If removing an object fails, the object remains with no row. On its
+next run the sweep lists the `instance-assets/` prefix and removes objects
+that have no row.
+
+## Branding settings
+
+The first settings are the instance's branding. A client needs them on the
+sign-in page before login, so all three are public. Their owner is `core`.
+
+| Name | Type | Default | Constraints |
+|---|---|---|---|
+| `site_name` | string | the empty string | at most 60 characters |
+| `logo` | asset reference | no asset | height at least 64 pixels, width at most four times the height |
+| `favicon` | asset reference | no asset | square, at least 32 pixels |
+
+A client shows the site name in page titles and on the sign-in page, the
+logo in the top bar and on the sign-in page, and the favicon as the browser
+tab icon. For the empty string or no asset, the client shows the product's
+own name and artwork.
+
+Branding makes a small first set. It has no ceiling, every value the
+validators accept is safe on a live instance, and no extension reads it. It
+still uses the table, the typed contract, the public read, the asset routes,
+and the console page, so each part of this RFD has a consumer.
 
 ## Secrets
 
@@ -354,8 +502,9 @@ move to an owner-held key.
    with any exception decided in an RFD?
 2. The ceiling rule: are capacity-related settings bounded by a ceiling in
    deployment config, or kept out of settings entirely?
-3. Which settings come first? The first set decides the first owners and
-   the first console page.
+3. Branding layout: does the instance logo replace the CoBE mark in the top
+   bar and on the sign-in page, or appear beside it? The settings are the
+   same either way. The answer decides the clients' layout.
 4. The sealing key: authority-derived, or held by the owning extension?
 5. Secret scope: one connection per provider for the instance, or also
    connections owned by a school or a course?
@@ -363,6 +512,10 @@ move to an owner-held key.
    grading container? This decides whether the pipeline extension runs a
    gateway, and belongs to the agentic grading design; rule 6 of the secrets
    section constrains both answers.
+7. Asset formats: are raster formats enough, or does a logo that must stay
+   sharp at every size need a sanitised SVG?
+8. Asset retention: is seven days long enough for an upload to be assigned
+   and for pages rendered before a change to be closed?
 
 ## Decision status
 
@@ -377,27 +530,36 @@ move to an owner-held key.
 | Secrets as owner-held connections with a write-only API | proposed |
 | Secret never reaches a process that handles untrusted content | proposed |
 | Authority-derived sealing key | proposed |
+| Uploaded files as assets in `core.instance_asset`, referred to by content hash | proposed |
+| Upload separate from assignment, assignment through the settings write | proposed |
+| Public, immutable asset read route that the core streams | proposed |
+| Raster formats, re-encoded as PNG | proposed |
+| Branding (site name, logo, favicon) as the first settings | proposed |
 
 ## Implementation
 
-1. A follow-up migration creates `core.system_setting`, with its down
-   migration.
+1. A follow-up migration creates `core.system_setting` and
+   `core.instance_asset`, with its down migration.
 2. `internal/systemsettings` holds the static table, the typed accessors, the
    loader with its cache, and the notification subject and payload shared by
    publisher and subscribers.
 3. The core's logistics module serves the write routes and the administrator
    reads, and publishes the notification. `GET /v1/instance` serves the
    public subset.
-4. Each process registers the loader and subscribes to the notification at
+4. The core serves the asset upload and read routes, declares the asset
+   reference type with its write step, and runs the retention sweep.
+5. Each process registers the loader and subscribes to the notification at
    startup.
-5. The SDK and `zincli` gain the settings routes; the console gains an
-   instance settings page per owner.
-6. The sealing code in `internal/entra` moves to a shared helper in
+6. The SDK and `zincli` gain the settings and asset routes; the console gains
+   an instance settings page per owner, starting with branding. The console
+   and the exam client read the branding settings in their root loaders.
+7. The sealing code in `internal/entra` moves to a shared helper in
    `internal/crypto`, and the Entra connection uses it. The first secret
    connection beyond Entra is designed with agentic grading.
 
 No setting moves out of deployment config as part of this RFD. Each move is
-a separate change that applies the placement rules.
+a separate change that applies the placement rules. The branding settings
+have no counterpart in deployment config.
 
 ## UX
 
@@ -405,7 +567,12 @@ a separate change that applies the placement rules.
   by owner. Each entry shows the value, the default, whether it was changed,
   who changed it and when, and the ceiling where one applies. A reset action
   deletes the row.
-- **Clients before login** read `GET /v1/instance` for the public subset.
+- **Asset settings** show the assigned asset beside the default artwork, an
+  upload control, and the reset action. The console previews a chosen file
+  before it uploads it, and assigns the asset once the upload returns.
+- **Clients before login** read `GET /v1/instance` for the public subset,
+  including the branding settings, and load assets from the asset read
+  route.
 - **Secret connections** show their state, the hint, and the last
   verification, with replace, verify, and remove actions. The credential is
   never shown after entry.
