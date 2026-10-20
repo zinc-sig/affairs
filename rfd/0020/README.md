@@ -271,8 +271,11 @@ CREATE TABLE core.system_setting (
 - **A present row is a recorded decision.** Its value is the JSON encoding of
   the setting's Go type.
 - **`updated_at`** is the revision token for `If-Match`, following the
-  optimistic concurrency convention RFD 0018 introduced. **`updated_by`**
-  records the administrator. A history table is not part of this RFD.
+  optimistic concurrency convention RFD 0018 introduced. A trigger sets it
+  on every update to the later of the clock time and one microsecond after
+  the previous value. The token therefore changes on every write, including
+  two writes within one microsecond. **`updated_by`** records the
+  administrator. A history table is not part of this RFD.
 - The table follows the core schema's boundary rule: every process may read
   it, and the core alone writes it.
 
@@ -321,6 +324,13 @@ row's `updated_at`; a stale token returns 412 with the fault
 value that does not decode into the declared type, and a value the validator
 rejects, each with a 400.
 
+The token uses the HTTP entity-tag form. For an undecided setting it is
+`""`, so a write that sets a setting only while it is still undecided sends
+`If-Match: ""`. An `If-Match` header with an empty value counts as the same
+token, so that form cannot skip the check. A write's body is the setting's
+JSON value. Resetting goes through `DELETE`, so a null value is rejected.
+Deleting an undecided setting returns 204 and publishes no notification.
+
 A write changes one setting. Fields that must change together form one
 object setting, so the API has no batch write.
 
@@ -339,10 +349,17 @@ guarantees that every process converges.
   individual rows.
 - **Administrators** read `GET /v1/settings` and `GET /v1/settings/{owner}`.
   Each entry carries the resolved value, the default, whether a decision is
-  recorded, the ceiling where one applies, `updated_at`, and `updated_by`.
+  recorded, the ceiling where one applies, `updated_at`, and `updated_by`
+  with the administrator's name. It also carries the setting's type
+  (`string` or `asset`), whether it is public, and its constraints, so the
+  console can choose an editor and check a value before sending it. A read
+  for an undeclared owner returns 404.
 - **Everyone, including unauthenticated clients,** reads the public subset
   through `GET /v1/instance`, which describes the instance to a client
-  before login. It carries only settings their owner declared public.
+  before login. It carries only settings their owner declared public,
+  grouped by owner as `{"core": {...}}`, so that settings of different
+  owners cannot collide by name. The response carries
+  `Cache-Control: public, max-age=10`, the expiry of the core's cache.
 - **A client server that renders pages** may cache `GET /v1/instance` for
   the same expiry as the core's loader, so that rendering a page does not
   add a request to the core.
@@ -386,10 +403,20 @@ CREATE TABLE core.instance_asset (
 2. It decodes the body as PNG, JPEG, or WebP. The format is judged from the
    bytes, and the `Content-Type` header is ignored.
 3. It rejects an image wider or taller than 2048 pixels.
-4. It re-encodes the decoded image as PNG. The stored bytes are then a plain
-   raster with no metadata, and the hash describes the bytes that are served.
-5. It writes the object, then the row, and returns the asset descriptor:
-   `sha256`, `media_type`, `width`, `height`, and `size`.
+4. It converts the decoded image to 8-bit RGBA and re-encodes it as PNG.
+   The stored bytes are then a plain raster with no metadata, and the hash
+   describes the bytes that are served.
+5. It rejects an encoded image larger than 4 MiB. Re-encoding can make a
+   compressed upload many times larger, and the stored image is served on
+   every page.
+6. It writes the object, then the row, and returns the asset descriptor:
+   `sha256`, `media_type`, `width`, `height`, and `size`. The status is 201
+   when the upload creates the asset and 200 when identical bytes are
+   already stored.
+
+The upload and the deletion of one asset both lock its row. A deletion
+therefore cannot remove the object of an asset that an upload is storing
+again.
 
 The upload writes no setting. Vector formats are rejected because an SVG can
 carry script, and the first settings do not need one.
@@ -418,13 +445,16 @@ to commit and sees the reference.
   descriptor and the path of the read route, or null when no asset is
   assigned. For null, a client shows its own built-in artwork. That artwork
   belongs to the client, and the core has no copy of it.
-- **`GET /v1/instance/assets/{sha256}`** serves an asset whose row exists to
-  anyone, including unauthenticated clients. The core streams the bytes from object storage,
-  as it does for pipeline result artifacts and proctoring recordings. The
-  URL names the content, so the response carries
+- **`GET /v1/instance/assets/{sha256}`** serves an asset whose row exists
+  to anyone, including unauthenticated clients. The core streams the bytes
+  from object storage, as it does for pipeline result artifacts and
+  proctoring recordings. The URL names the content, so the response carries
   `Cache-Control: public, max-age=31536000, immutable`. It also carries
-  `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`,
-  so that opening the URL directly runs nothing.
+  `X-Content-Type-Options: nosniff` and the core's policy for untrusted
+  content, `Content-Security-Policy: sandbox; default-src 'none'`, so that
+  opening the URL directly runs nothing. If the row exists and the object
+  does not, the core logs the inconsistency and returns 404, and the client
+  shows its built-in artwork.
 
 Every asset is public. A file for a private setting needs an access check on
 the read route and is outside this RFD.
@@ -434,8 +464,9 @@ the read route and is outside this RFD.
 An asset is kept until an administrator deletes it. Branding assets are few
 and small, and they change rarely, so the storage they take stays small.
 
-- **`GET /v1/settings/assets`** lists every asset with its descriptor,
-  `created_at`, `created_by`, and the settings that refer to it. It requires
+- **`GET /v1/settings/assets`** lists every asset with its descriptor, the
+  path of the read route, `created_at`, `created_by` with the
+  administrator's name, and the settings that refer to it. It requires
   `system#admin`. The settings page offers earlier uploads from this list,
   so an administrator can return to a previous logo without uploading it
   again.
