@@ -99,8 +99,8 @@ the examination switch, states whether students answer a paper in the client
 or upload files. The four combinations are: hard with a paper, today's exam;
 hard with uploads, a timed upload exam, which already works because an exam
 activity without a document force-submits attachment deliveries; soft with
-uploads, today's assignment; and soft with a paper, the online homework that
-is not supported yet.
+uploads, today's assignment; and soft with a paper, online homework, whose
+rules are under "The modality rule and online homework".
 
 **One envelope in the core.** A JSONB column on the activity row, keyed by
 extension name, holds each extension's switch and its activity-level policy.
@@ -540,7 +540,7 @@ refusing new invalid windows.
 
 | Change | What the owning extension does or checks |
 |---|---|
-| cutoff soft to hard | schedule force-submit for every open collection; existing windows may violate the hard-cutoff invariants and are reported |
+| cutoff soft to hard | schedule force-submit for every open collection; existing windows may violate the hard-cutoff invariants and are reported; a collection's attempt limit stays stored and is not applied |
 | cutoff hard to soft | cancel scheduled force-submit workflows |
 | examination on to off | deliveries may hold answers against the paper; serving stops; recoverable by re-enabling; the console confirm quotes the delivery count |
 | pipeline on to off | in-flight runs finish; objective components ungrade until re-enabled; manual-only formulas still score |
@@ -685,20 +685,39 @@ paper has not been materialized with parts or the upload activity has no
 staff set, the activity has no parts and submission accepts any file within
 the instance caps.
 
-Nothing in the core prevents a soft cutoff with a paper. The gaps are in
-the clients and in semantics: the exam client's entry gate compares the
-session cap with the window end for every activity it opens, so a two-week
-window trips the twelve-hour cap on every visit and the gate must apply
-only under a hard cutoff; the student home and course cards key intent and
-lead time on the type; they drop it and instead show what needs the
-student's attention (a start to attend, pre-start checks, a deadline that is
-final or accepts late work, the client or an upload, something to resume,
-released results), with `paper` and `cutoff` as inputs; late answers after
-the due time under a soft cutoff accrue delay
-as attachments do, which needs a product decision; and force-submit does not
-run, so a student who never commits stays a no-show. None of these block the
-settings work; they are the checklist for the day the combination is
-supported.
+A soft cutoff with a paper is supported under these rules:
+
+- **Submitting is the student's act.** Nothing is submitted automatically.
+  A staging delivery left at the stop time is a no-show and is never
+  marked. The exam client keeps the submission state beside the save
+  status and reminds the student before the due and stop times.
+- **Student writes end at the stop time.** Under a soft cutoff, once the
+  stop time plus the save grace has passed, the core refuses the student's
+  push, attachment delete and finalize with `submission.collection_not_open`.
+  Uploads follow the same rule. Staff acting for the student are not
+  refused.
+- **Submitting again.** While the window is open, the student can change
+  their answers and submit again, under a soft cutoff only. A new attempt
+  starts from the last submitted answers. `report.score_selection` is
+  published, so the client can say which submission counts. Under a hard
+  cutoff, submitting ends the exam.
+- **The attempt limit.** A collection's `delivery_limit` caps attempts under
+  a soft cutoff. An attempt is a delivery the student created, staging
+  included, except one the server committed at the stop time. Collection
+  create and update refuse a non-zero limit under a hard cutoff. A switch
+  to hard keeps the stored limit, does not apply it, and reports it as 0 on
+  the student reads; a switch back to soft applies it again.
+- **The entry gate.** The exam client's session-cap gate applies only under
+  a hard cutoff, so a two-week window does not trip the twelve-hour cap.
+- **Export** is eligible under a hard cutoff, or under a soft cutoff with
+  the paper on once every collection is past its stop time. Staging
+  deliveries left at the stop time do not hold it back.
+
+Left out: staff committing a student's unsubmitted work; late penalties,
+since the core records delay and turning delay into marks is a grading
+decision; and the student home and course cards beyond the activity's
+action card, which keep keying on the type until they show what needs the
+student's attention, with `paper` and `cutoff` as inputs.
 
 ## Backfill contract
 
@@ -817,7 +836,7 @@ coursework read's `activity_kind` drop together.
 ### Deferred
 
 Exam and assignment as stored templates (contract-neutral, because create
-takes an inline envelope); the online-homework checklist; a gate that refuses activation on a red
+takes an inline envelope); a gate that refuses activation on a red
 health or setup status; the console presentation of the two mixed axis combinations;
 extensions advertising their settings schema to the core; opening the health
 read to proctoring's operations circle (the chief invigilator, course staff,
