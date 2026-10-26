@@ -1,7 +1,7 @@
 ---
 authors: Thomas Li
 state: committed
-discussion:
+discussion: "[#28](https://github.com/zinc-sig/affairs/pull/28)"
 labels: examination, platform, ui
 ---
 
