@@ -1,7 +1,7 @@
 ---
 authors: Thomas Li
 state: prediscussion
-discussion:
+discussion: "[#29](https://github.com/zinc-sig/affairs/pull/29)"
 labels: direction, platform, ux
 ---
 
