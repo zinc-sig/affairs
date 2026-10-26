@@ -604,7 +604,8 @@ timing](#materialization-timing)). This section is what it emits.
 its single `pipeline` block and its one-or-more `component` knob blocks:
 
 - The `pipeline "<qid>" { ... }` block is appended to the assembled
-  pipeline config.
+  pipeline config. (Amended: see Amendments, 2026-10-26. The generator
+  first adds `include` and `optional` to the block's `submission` block.)
 - Each `component` knob block is appended to the assembled
   formula config, its label namespaced to the global component name
   `<qid>` (label equal to the qid) or `<qid>-<label>`.
@@ -655,6 +656,10 @@ component "sa" {
                    document.examination.questions[code].marks if succeeded(s.test)])
 }
 ```
+
+Amended: see Amendments, 2026-10-26. Each batched pipeline also carries
+`submission { include = [...], optional = true }` listing its questions'
+answer files.
 
 Amended: see Amendments, 2026-08-12 A. A modality no longer emits one
 modality-wide `component "<modality>"` summing marks; it emits a
@@ -1506,3 +1511,42 @@ integration](#examination-import-integration)) predates `msq` and has no
 `msq`-specific handling; its manifest path does not branch on modality.
 Import coverage of `msq` is unspecified here and left to that flow's own
 follow-up. `msq` questions are authored on the Documents tab.
+
+### 2026-10-26: generated pipelines select their answer files
+
+The generator's pipelines carry a `submission` selection the body does not
+describe, shipped in core by
+[zinc-sig/core#753](https://github.com/zinc-sig/core/pull/753). RFD 0013's
+2026-10-26 amendment defines `include` and `optional`, what they stage, and
+how a selection fails; this entry records what the generator emits. Where
+it and the body disagree, this entry governs.
+
+- **Coding questions.** The `pipeline "<qid>"` block is no longer appended
+  verbatim. The generator parses it and adds `include = ["<qid>.*"]` and
+  `optional = true` to its `submission` block, beside the `file` the
+  fragment names (`withAnswerSelection`, core
+  `internal/pipeline/configgen/selection.go`); the rewrite reformats the
+  block. A fragment cannot set `include`, `dir`, or `optional` itself: the
+  save-time fragment check rejects them (rule `fragment-submission-file`).
+- **Batched `mc`, `msq`, `tf`, and `sa` pipelines.** Each gains a
+  `submission` block whose `include` lists its questions' answer files,
+  `<qid>.txt`, as literals, with `optional = true` (`emitModalityPipeline`,
+  `configgen/emit.go`). The list is literal because the block is decoded
+  without the examination document in scope, and the generator knows every
+  question. With no `file` or `dir`, each answer stays at its stored path,
+  where the `diff` arguments read it.
+
+Every generated selection is optional because an unanswered question has no
+answer file. Without `optional` the selection would fail the run and ungrade
+the whole delivery; with it, the question scores 0 as its tests fail, as
+before. A coding selection never matches more than one file because the exam
+client names each answer after its question, `<qid>.<ext>` with its
+language's extension for a coding question and `.txt` for every other kind,
+and its push replaces the delivery's file set as a whole.
+
+Runs of a generated pipeline are staged at agent protocol 4 (RFD 0015,
+Decision 7), so the images that grade an examination need an agent that
+serves it. The selection reaches an examination's stored config at its
+paper's next materializing save, such as a question publish or a
+marking-scheme save, or through the manual materialization endpoint. Nothing
+backfills, so a paper keeps the whole-delivery mirror until then.
