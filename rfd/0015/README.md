@@ -1,7 +1,7 @@
 ---
 authors: Kristopher Lam
 state: published
-discussion:
+discussion: "[#26](https://github.com/zinc-sig/affairs/pull/26)"
 labels: direction, infrastructure
 ---
 
