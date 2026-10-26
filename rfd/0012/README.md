@@ -395,7 +395,7 @@ The entry gate targets the **admission state**, not a LiveKit token. `IsAdmitted
 11. **Manual admission.** A student whose capture cannot complete (broken webcam, persistent upload failure, ID left at home) is verified in person; an invigilator issues a manual admit (via `POST /rooms/:room_id/sessions/:user_id/manual-admit`) with a reason, the extension audits it and sets the session `physically_verified`, and the student proceeds to step 6. There is no automatic deadline or `captures_missing` timer; admitting without a capture is a human call.
 12. **Raise hand.** Student sends `raise_hand`. Invigilator WS receives it, invigilator authors a private reply (the `POST .../messages` route). Both audited.
 13. **Force submit.** An invigilator issues a force-submit (the HTTP lock route). Extension audits, sets `locked_at` (so the bearer `401`s at once) and writes a durable `session_locked` frame, fans it to the student's WS, and publishes the observability event `proctoring.events.session.revoked`; core's next `IsAdmitted` heartbeat returns not-admitted and its content path stops serving. Committing the student's staged delivery remains the examination activity's job.
-14. **Window close.** At `stop_at` the collection force-submit applies the submission check (the submission parts design in core) to each staging delivery, commits each passing delivery as force-committed at `stop_at`, and stamps the collection `closed_at` once every staging delivery has been judged. A failing delivery is left staging, in both answering modes, with no deadline, until staff commit it as-is, which commits it at `stop_at` as force-submit would have, so grading starts from it. The exam client shows its freeze screen from `stop_at` until the collection reads closed. Because closed state comes from the `closed_at` stamp (R5.2), the collection reads closed once force-submit has stamped it, whether or not a delivery was left staging, and the client leaves the freeze screen for an end screen. A student whose delivery was committed sees it as submitted. A student whose delivery was left staging sees the attempt as **Held for staff review** with a plain-language reason (for example, an unexpected file was included), never the codes the submission check returns; once staff commit it as-is, it reads as submitted.
+14. **Window close.** At `stop_at` the collection force-submit applies the collection's prescreen to each staging delivery, commits each passing delivery as force-committed at `stop_at`, and stamps the collection `closed_at` once every staging delivery has been judged. The prescreen is not applied while the paper is answered in the exam client, so on an examination every staging delivery is committed. A delivery of uploaded files that fails the prescreen is left staging with no deadline, until staff commit it as-is, which commits it at `stop_at` as force-submit would have, so grading starts from it. The exam client shows its freeze screen from `stop_at` until the collection reads closed. Because closed state comes from the `closed_at` stamp (R5.2), the collection reads closed once force-submit has stamped it, whether or not a delivery was left staging, and the client leaves the freeze screen for an end screen. A student whose delivery was committed sees it as submitted. A student whose delivery was left staging sees the attempt as **Held for staff review** with a plain-language reason, such as a required file that is missing, never the codes the prescreen returns; once staff commit it as-is, it reads as submitted.
 15. **Exam stop.** Staff clicks *Stop proctoring* per RFD 0011. Extension closes all WS sessions for the exam, marks any unreviewed captures accordingly in the audit log, and runs RFD 0011's room path. Captured images remain in the object store under the deployment retention policy (or indefinitely while `held`).
 
 ## Lock Recovery: Suspend vs Revoke, and the Reconciler (R5)
@@ -482,27 +482,24 @@ consumer was async. What must be correct is the lock's **authority**: a *wrong* 
 a validly-extended student) sends them to the locked screen mid-exam, so the reconciler, not a
 stale event, is the sole writer of session-blocked state.
 
-The closed signal the sweep reads is submission's activity state, which reports an activity
-closed once every collection is closed. As built, both closed-state derivations require that no
-delivery is still staging: the activity state responder's `closed` (behind
-`GetActivityClosedState`), and the collection state's `freeze` / `closed` split with its
-`is_closed`, which the exam client polls. The submission parts design in core changes what
-force-submit leaves behind. At `stop_at` force-submit applies the submission check to each
-staging delivery, commits the passing ones, and leaves a failing delivery staging until staff
-commit it as-is. That is one rule for both answering modes (a paper answered in the exam client,
-or files uploaded by the student); the prescreen as built leaves a failing delivery staging for
-uploaded files only, so for the exam client this is a change. A closed state that required zero
-staging deliveries would let one left-staging delivery keep the collection, and so the activity,
-not closed indefinitely: the sweep could never recover a lost `collection.closed`, and the exam
-client would stay on its freeze screen. Closed state is therefore decoupled from staging
-deliveries: force-submit stamps the collection's `closed_at` after every staging delivery has
-been judged (committed or left staging), and both closed-state readers use that stamp. An
-activity is closed when every one of its collections has `closed_at`. The stamp is set once, so
-a Temporal retry of a force-submit run that has already stamped is a no-op. The backstop
-recovers a lost `collection.closed` whether or not deliveries are left staging. A left-staging
-delivery has no deadline: it stays held until staff act, and the staff list of deliveries left
-staging keeps it visible. An automatic commit after a timeout would make a grading decision
-nobody made.
+The closed signal the sweep reads is submission's activity state, which reports an activity closed
+once every collection is closed. As built, both closed-state derivations require that no delivery is
+still staging: the activity state responder's `closed` (behind `GetActivityClosedState`), and the
+collection state's `freeze` / `closed` split with its `is_closed`, which the exam client polls.
+Force-submit can leave a delivery behind: at `stop_at` it applies the collection's prescreen to each
+staging delivery, commits the passing ones, and leaves a failing delivery staging until staff commit
+it as-is. The prescreen is not applied while the paper is answered in the exam client, so on an
+examination every staging delivery is committed, and a delivery is left staging only on a collection
+of uploaded files. A closed state that required zero staging deliveries would let one left-staging
+delivery keep the collection, and so the activity, not closed indefinitely, and the sweep could
+never recover a lost `collection.closed`. Closed state is therefore decoupled from staging
+deliveries: force-submit stamps the collection's `closed_at` after every staging delivery has been
+judged (committed or left staging), and both closed-state readers use that stamp. An activity is
+closed when every one of its collections has `closed_at`. The stamp is set once, so a Temporal retry
+of a force-submit run that has already stamped is a no-op. The backstop recovers a lost
+`collection.closed` whether or not deliveries are left staging. A left-staging delivery has no
+deadline: it stays held until staff act, and the staff list of deliveries left staging keeps it
+visible. An automatic commit after a timeout would make a grading decision nobody made.
 
 Two consequences of the "one predicate" resolution, decided:
 
@@ -538,7 +535,7 @@ Two consequences of the "one predicate" resolution, decided:
   already closed clears its `closed_at`, so the collection reads open again to the sweep and to
   the exam client. A delivery that force-submit left staging returns to ordinary staging: the
   student can fix it and finalize, and the next force-submit at the new `stop_at` judges it again
-  with the same submission check.
+  against the collection's prescreen.
 - **Reopen an ended room.** A new transition from `ended` to `open` (the existing status CAS cannot express
   it) that clears `ended_at` and nudges the reconcile. Un-ending is safe: room-end is the ended-CAS
   plus the session-**suspend** loop in one transaction; it seals no evidence and does **not** delete
@@ -578,7 +575,7 @@ after reinstate they re-stage and are force-committed again at the new one. This
 un-commit exists, exam collections are `score_selection=latest` so the phantom commit does not win,
 and the cost of rolling back a committed Temporal force-submit is not worth a rare, harmless record
 artifact; the phantom is logged for forensic clarity. The phantom commit covers deliveries that
-passed the submission check at the old `stop_at`; a delivery the old force-submit left staging has
+the old force-submit committed at the old `stop_at`; a delivery the old force-submit left staging has
 no phantom, because the extend returns it to ordinary staging (R5.3) and it is first committed at
 the new `stop_at`, or by staff commit as-is. Separately, the reconciler's lock direction
 must re-verify live closed-state before suspending (or be a pure nudge), or the same race produces a
@@ -680,7 +677,7 @@ A hybrid where control frames travel over the LiveKit data channel for low-laten
 
   Required normative RFD 0011 edits also land here and **require the RFD 0011 owner's ratification**: (1) anchor the media-independent enrollment (a DB `proctoring.assignment` existence check, not a new OpenFGA type), amending RFD 0011's "`student` is the single source of truth for room membership" to a two-plane model (enrollment = session/content, `student` = media), with room creation deriving `student` tuples from the enrollment set; (2) `POST /rooms` rejects with `409 media_disabled` when live `live_media=off`; (3) the token-route student-branch gains the admission + `room_ready` + device-proof preconditions (the invigilator branch is unchanged); stated as **new** machinery, since RFD 0011 has no admission gate today.
 - **PII retention is enforced by object-store lifecycle rules.** Correctness of deletion depends on the deployment's lifecycle rules being present and scoped correctly. A post-deploy check validates the rules; drift or mis-config is caught there, not at scale.
-- **Force-submit semantics are defined by the examination extension.** This RFD guarantees delivery and audit but not the answer-handling semantics. If the examination extension is unavailable, the lock still lands: the interactive lock writes `locked_at` plus a durable `session_locked` frame and fans it out, so the student sees the lock regardless. What degrades during an examination/submission outage is the content gate and the delivery commit, not the lock. A delivery that fails the submission check at `stop_at` is left staging rather than committed, in both answering modes; the collection still reads closed, and the delivery is committed when staff commit it as-is (see the window close step of the End-to-End Lifecycle).
+- **Force-submit semantics are defined by the examination extension.** This RFD guarantees delivery and audit but not the answer-handling semantics. If the examination extension is unavailable, the lock still lands: the interactive lock writes `locked_at` plus a durable `session_locked` frame and fans it out, so the student sees the lock regardless. What degrades during an examination/submission outage is the content gate and the delivery commit, not the lock. A delivery of uploaded files that fails the collection's prescreen at `stop_at` is left staging rather than committed, and the prescreen is not applied to a paper answered in the exam client; the collection still reads closed, and the delivery is committed when staff commit it as-is (see the window close step of the End-to-End Lifecycle).
 - **KEK loss is unrecoverable.** Captures encrypted under a lost KEK version cannot be decrypted by anyone. KEK material is treated as a backed-up root credential; loss equals data destruction.
 - **Extension is the single read path for captures.** Decryption happens in the extension; each read costs two I/O round-trips and holds a ~150 KB plaintext briefly in memory. Review-queue bursts at exam-start are concurrent rather than long-lived, so capacity planning must size for review concurrency, not just connected sessions. An extension outage also means invigilators cannot view captures during the outage.
 - **In-process KEK default is portable, not maximum-strength.** A KEK held in extension memory or in deployment-secret form (env var, mounted K8s Secret) is exposed by extension-process compromise, heap/core dumps, container snapshots, and CI logs that print rendered manifests. Deployments concerned with these surfaces should use Vault Transit or a cloud KMS, where the KEK never enters extension memory. The default exists so portable / small deployments work without external KMS infrastructure.
