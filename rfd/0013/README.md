@@ -1338,148 +1338,6 @@ in [zinc-sig/ui#564](https://github.com/zinc-sig/ui/pull/564).
   unknown result rather than its fallback, so the failure surfaces as a
   non-numeric score with no indication of its cause.
 
-### 2026-10-08: Pipelines place submission parts
-
-State: proposed. Discussion:
-[#20](https://github.com/zinc-sig/affairs/pull/20), first opened as
-[#23](https://github.com/zinc-sig/affairs/pull/23).
-
-Affects [Pipeline block](#pipeline-block) (a `submission` block the body
-omits) and [Validate phase](#validate-phase-schema-only) (the rules for
-that block).
-
-#### Problem
-
-Core's pipeline parser accepts a `submission` block the body does not
-document (`internal/pipeline/spec_pipeline.go`, `internal/pipeline/parse.go`):
-
-```hcl
-pipeline "q3" {
-  submission {
-    file = "src/main/java/app/Solution.java"   # required
-  }
-}
-```
-
-A **delivery** is the set of files a student hands in for an activity.
-Every pipeline run mirrors the whole delivery into its workspace root
-(`workflow/grading/staging.go`). The block names the workspace path of
-one file from that delivery, the **answer**: the root file whose name
-minus its extension equals the pipeline label, so `q3.py` for the
-pipeline `"q3"`. The agent places the answer after the teacher's objects,
-and the answer wins its target, so a skeleton stub at the same path is
-replaced (`AnswerSpec` in `internal/pipeline/agentcontract/contract.go`).
-The exam client writes `<qid>.<ext>` for a coding question and the
-question id is the pipeline label, so the rule holds without
-configuration. Without the block the answer keeps its delivered name at
-the root.
-
-The rule has two limits. It places at most one file, chosen by stem, so a
-pipeline cannot receive several delivered files at a chosen location
-and cannot choose among several delivered files by name. And the mirror puts
-every delivered file into every run, including files no rule accepts.
-
-The submission extension gains **parts**: named groups of delivered files
-with acceptance rules, matched by globs over the stored file names. Staff
-author parts for an upload activity; examination derives them from the
-paper, one part per question named by the question id, as a
-materialization artifact (RFD 0014). A delivery that passes its parts is
-stamped with the mapping from part to files, and grading reads that stamp
-rather than matching again (the submission parts design in core). With a
-declared mapping, a pipeline can address files by part, and staging can
-place by part instead of mirroring the whole delivery.
-
-#### Change
-
-The block gains `part` and `dir`:
-
-```hcl
-pipeline "q3" {
-  submission {
-    file = "src/main/java/app/Solution.java"   # part omitted: part "q3"
-  }
-}
-
-pipeline "report" {
-  submission {
-    part = "code"            # patterns = ["code/**"]; the base is "code/"
-    dir  = "src/main/app"    # code/Main.py lands at src/main/app/Main.py
-  }
-}
-```
-
-- `part` names the part the block places. When omitted, the block refers
-  to the part named after the pipeline label. This carries the stem rule
-  over to parts, because the answer stem, the label, and the question id
-  are the same name, so a config written for the answer rule keeps
-  working once its activity has parts. A hand-written config for an
-  upload activity names `part`.
-- `file` places a single-file part at the given workspace path, which may
-  rename the file. Placing it over a skeleton stub is allowed, because the
-  student placement wins. Lint requires the part's `max_files = 1`.
-- `dir` mounts a multi-file part under the given directory after
-  stripping the part's **base**: the literal prefix shared by all of its
-  patterns, which must end at a path-segment boundary. The pattern
-  `q8/**` has the base `q8/`; a part with the patterns `q8/**` and
-  `q8b/**` has no base and cannot be mounted with `dir`.
-- A block carries exactly one of `file` or `dir`, so it always names a
-  path. Both take a workspace-relative path: clean, with no `..` segment,
-  and outside the reserved workspace directories.
-
-The shape of the block is a validate-phase check. The checks that need
-the part set (the part exists, `max_files = 1` for `file`, a base for
-`dir`) run when the config is saved for an activity, against that
-activity's enforced part set, so they sit outside the single-file validate
-phase.
-
-**Staging.** Every pipeline run of a delivery with a stamped mapping
-receives all of the matched files at their stored paths, and a file no
-part matched is never staged. A part that a `submission` block places
-exists only at its target: `file` and `dir` replace that part's default
-placement, so the part is not also at its stored path. Such a run does
-not apply the answer rule; there is no delivery mirror to find a root
-file in, and part placement takes its place. Batched modality pipelines,
-which read `<qid>.txt` at the workspace root, need no change. A delivery
-of an activity with no parts keeps the whole-delivery mirror and the
-answer rule, so a `submission { file }` block without `part` keeps its
-meaning there.
-
-**Dangling references.** A `part` name, explicit or defaulted from the
-label, that the activity's enforced part set does not contain is caught
-three ways: pipeline lint checks the names against the enforced set when
-the config is saved; the console's activity setup checklist lists them;
-and at run time staging fails the run as an infrastructure error before
-any stage runs, so a workspace that received no files is never graded as
-0. On an activity with no parts, a block that sets `part` or `dir` is a
-dangling reference and fails the lint; only a plain `file` has a meaning
-there.
-
-**Agent protocol.** Placement by part uses agent protocol version 4,
-which adds a student placement, from a stored file to a target path, that
-wins over teacher files as the answer placement does (the agent protocol
-amendment of RFD 0015). A run of a delivery with a stamped mapping
-requires version 4. The agent is baked into the environment image; an
-image whose agent predates version 4 fails the run with the "rebuild the
-environment image" failure that a protocol mismatch raises. Runs of
-deliveries without parts keep the protocol version they use without this
-amendment.
-
-#### Alternatives considered
-
-- **Explicit file and directory part kinds.** A part declared as a file
-  or as a directory would make `file` and `dir` checkable from the kind
-  alone. Globs cover both shapes with one matcher, and the base rule
-  gives `dir` an equivalent check: a multi-file part has a mount point if
-  and only if its patterns share a segment-aligned prefix.
-- **A server readiness responder for dangling references.** It relied on
-  a per-extension readiness route that core does not have. Core has the
-  extension-health read and the console setup checklist, and the lint and
-  the run-time failure cover the rest.
-- **Keep the whole-delivery mirror for runs with parts.** Every delivered
-  file would reach every run, including files the parts rejected and
-  files staff committed as unmatched. Staging only the matched files
-  keeps the workspace equal to the stamped record.
-
 ### 2026-10-12: Components scored by a level staff pick
 
 State: proposed. Discussion:
@@ -1658,3 +1516,216 @@ level picker to the override.
 - **Pick a level from pipeline results with an expression.** A `score`
   expression already does this. Keeping picks to staff keeps every level a
   recorded decision with a marker.
+
+### 2026-10-26: Pipelines select their submission files
+
+State: proposed. Discussion:
+[#20](https://github.com/zinc-sig/affairs/pull/20). It replaces the
+submission parts amendment first opened as
+[#23](https://github.com/zinc-sig/affairs/pull/23), withdrawn after
+[zinc-sig/core#749](https://github.com/zinc-sig/core/pull/749) removed
+submission parts. Implemented in core by
+[zinc-sig/core#753](https://github.com/zinc-sig/core/pull/753), on the
+agent protocol 4 of
+[zinc-sig/core#716](https://github.com/zinc-sig/core/pull/716).
+
+Affects [Pipeline block](#pipeline-block) (a `submission` block the body
+omits) and [Validate phase](#validate-phase-schema-only) (the rules for
+that block).
+
+#### Problem
+
+Core's pipeline parser accepts a `submission` block the body does not
+document (`internal/pipeline/spec_pipeline.go`, `internal/pipeline/parse.go`):
+
+```hcl
+pipeline "q3" {
+  submission {
+    file = "src/main/java/app/Solution.java"
+  }
+}
+```
+
+A **delivery** is the set of files a student hands in for an activity.
+Every pipeline run mirrors the whole delivery into its workspace root
+(`workflow/grading/staging.go`). The block names the workspace path of
+one file from that delivery, the **answer**: the root file whose name
+minus its extension equals the pipeline label, so `q3.py` for the
+pipeline `"q3"`. The agent places the answer after the teacher's objects,
+and the answer wins its target, so a skeleton stub at the same path is
+replaced (`AnswerSpec` in `internal/pipeline/agentcontract/contract.go`).
+The exam client writes `<qid>.<ext>` for a coding question and the
+question id is the pipeline label, so the rule holds without
+configuration. Without the block the answer keeps its delivered name at
+the root.
+
+The rule has two limits. It places at most one file, chosen by stem, so a
+pipeline cannot receive several delivered files at a chosen location and
+cannot choose among several delivered files by name. And the mirror puts
+every delivered file into every run: a report pipeline sees the source
+tree, a build pipeline sees the report, and a stray file reaches every
+workspace.
+
+What a student may hand in is decided by the submission extension's
+**collection prescreen**: required paths, starter files, and ignore
+filters, attached per collection, so the collections of one activity, such
+as the groups of a group project, can require different files. The
+prescreen is the only gate at finalize. A pipeline has no way to say which
+of the admitted files it grades, and it must not learn which collection a
+delivery came from: the two rules compose only if neither reads the other.
+
+#### Change
+
+The block gains `include`, `dir`, and `optional`:
+
+```hcl
+pipeline "report" {
+  submission {
+    include  = ["report.pdf", "report.docx"]
+    file     = "in/report.pdf"   # exactly one selected file, placed and renamed
+    optional = true              # no match places nothing and the run proceeds
+  }
+}
+
+pipeline "app" {
+  submission {
+    include = ["src/**"]
+    dir     = "app"              # src/lib/io.c lands at app/lib/io.c
+  }
+}
+```
+
+- `include` lists glob patterns over the delivery's **stored names**: the
+  names submission keeps, relative and separated by `/`, with the first
+  segment of a folder upload dropped, so `project/src/a.py` is stored as
+  `src/a.py`. `*` matches within one segment and `**` across segments.
+  Only the selected files reach the workspace.
+- With `include` alone, each selected file keeps its stored path.
+- `file` with `include` places the one selected file at the given
+  workspace path, which may rename it.
+- `dir` places every selected file under the given directory after
+  removing the patterns' **base**: the literal leading folder that all of
+  them share, ending at a path-segment boundary. `src/**` and
+  `src/lib/*.c` have the base `src/`; `q8/**` and `q8b/**` have none, so
+  they cannot be mounted with `dir`.
+- `optional = true` lets a selection that matches nothing place nothing,
+  and the run proceeds.
+- `file` and `dir` exclude each other, and `dir` and `optional` need
+  `include`. A block with `file` and no `include` keeps the answer rule
+  above, so every config written before this amendment keeps its meaning.
+
+| Block | Files in the workspace |
+|---|---|
+| None | The whole delivery, mirrored at the root. |
+| `file` alone | The whole delivery, with the answer moved to `file`. |
+| `include` | Each selected file at its stored path. |
+| `include` and `file` | The one selected file at `file`. |
+| `include` and `dir` | Each selected file under `dir`, with the base removed. |
+
+**Validate phase.** The rules check the block's shape: it sets `include`,
+`file`, or both; `file` and `dir` exclude each other; `dir` and `optional`
+need `include`; `include` lists at least one pattern, each relative,
+separated by `/`, with no empty, `.`, or `..` segment, no backslash, and
+valid glob syntax; and the patterns of a `dir` block have a base. `file`
+and `dir` are workspace paths: clean, relative, with no `..` segment, and
+outside the reserved workspace directories. Nothing declares at the
+activity which files a delivery holds, so the rules cannot check a pattern
+against one; a pattern that matches nothing is found when a delivery is
+graded.
+
+**Staging.** A run of a pipeline with `include` does not mirror the
+delivery and does not choose an answer by stem. Core matches the patterns
+against the stored names in the delivery's attachments manifest, which it
+reads when grading is triggered, and sends one student placement per
+selected file. The agent writes the teacher's objects first and the
+placements after them, so a selected file replaces a stub at its target. A
+file no pattern selects never reaches that workspace. A pipeline without
+`include` is staged as before.
+
+**A selection the delivery cannot satisfy fails the run** as a
+configuration failure before a container is dispatched, and the run is not
+retried:
+
+- no file matches and the block is not `optional`;
+- more than one file matches a `file` block, with or without `optional`;
+- a `dir` block selects a file named like the base itself, such as a file
+  `src` under `src/**`, which has no path below the base;
+- two placements land at one path, or one placement's path is a directory
+  of another's.
+
+The pipeline then has no results, so under the 2026-10-02 amendment a
+formula that reads it is ungraded with the diagnostic rather than scoring
+an empty workspace as 0.
+
+**Agent protocol.** Placement uses agent protocol version 4, which adds the
+student placement (RFD 0015, Decision 7). Every run of a pipeline with
+`include` is sent at version 4, even when the delivery holds no file it
+selects, so whether a run needs a rebuilt image is known from the config
+alone. An image whose agent predates version 4 fails the run with the
+"rebuild the environment image" failure that a protocol mismatch raises,
+which is not retried. Runs of pipelines without `include` keep the
+protocol version they use without this amendment.
+
+**Generated examination configs.** The examination generator (RFD 0014)
+selects each question's answer file by the name the exam client delivers,
+`<qid>.<ext>`:
+
+- each coding pipeline gets `include = ["<qid>.*"]` beside the `file` its
+  fragment names, and the fragment itself cannot set `include`, `dir`, or
+  `optional`;
+- each batched MC, MSQ, TF, and SA pipeline gets the literal list of its
+  questions' answer files, such as `include = ["q1.txt", "q4.txt"]`, with
+  no `file` or `dir`, so each answer stays at its stored path.
+
+Both always set `optional = true`. An unanswered question has no answer
+file; it scores 0 as its tests fail, rather than leaving the whole delivery
+ungraded. A coding question never holds more than one matching file, because
+the exam client names each answer after its question and its push replaces
+the delivery's file set as a whole.
+
+#### Effect on stored configs
+
+A stored config changes only when its author adds `include`. A generated
+examination config gains the selection at its paper's next materializing
+save, such as a question publish or a marking-scheme save, or through the
+manual materialization endpoint; nothing backfills, so an examination keeps
+the whole-delivery mirror until then.
+
+#### Implementation
+
+The block's grammar and rules are in `internal/pipeline/spec_pipeline.go`
+(rules `submission-selects`, `submission-file-or-dir`,
+`submission-needs-include`, `submission-include-patterns`, and
+`submission-dir-base`) and the fragment rule in
+`internal/pipeline/spec_fragment.go`. The matcher and the base are
+`internal/pipeline/globmatch` (`Select`, `Base`). Staging is
+`placementInputFor` in `workflow/grading/staging.go`, behind the workflow
+marker `submission-include`. The generator's selection is
+`internal/pipeline/configgen` (`withAnswerSelection` and
+`emitModalityPipeline`).
+
+#### Alternatives considered
+
+- **Submission parts.** An activity-level declaration of named groups of
+  delivered files, each with acceptance rules, checked at finalize; a
+  passing delivery was stamped with its mapping from part to files, and a
+  pipeline placed a part by name. It was built
+  ([zinc-sig/core#729](https://github.com/zinc-sig/core/pull/729), closed)
+  and removed
+  ([zinc-sig/core#749](https://github.com/zinc-sig/core/pull/749)). It was
+  to replace the collection prescreen with one declaration per activity,
+  which cannot require different files from different collections, and it
+  gave grading a second record of what a delivery holds. Selection by the
+  pipeline keeps the prescreen as the gate and adds a concept to nothing but
+  the block.
+- **A save-time check of each pattern.** Checking that a pattern can match
+  a file needs a declaration of what deliveries hold. The prescreen
+  differs per collection and a pipeline does not know collections, so a
+  pattern that matches nothing is found at grading, with a diagnostic and
+  no grade of 0.
+- **Keep the whole-delivery mirror with `include` as a filter on the
+  answer.** Every delivered file would still reach every run, so a stray
+  or misplaced file could still change what a pipeline builds or reads.
+- **Fail a generated question with no answer file.** Without `optional`,
+  one unanswered question would ungrade the whole delivery, where today it
+  scores 0.
