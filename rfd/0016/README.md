@@ -1,7 +1,7 @@
 ---
 authors: Thomas Li
 state: published
-discussion:
+discussion: "[#27](https://github.com/zinc-sig/affairs/pull/27)"
 labels: feature, infrastructure
 ---
 
