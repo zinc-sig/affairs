@@ -1051,7 +1051,7 @@ body disagree, the amendment is authoritative.
 ### 2026-09-28: Dependencies gate by scenario code
 
 State: proposed. Discussion:
-[#20](https://github.com/zinc-sig/affairs/pull/20). Implemented in core
+[#30](https://github.com/zinc-sig/affairs/pull/30). Implemented in core
 by [zinc-sig/core#623](https://github.com/zinc-sig/core/pull/623).
 
 Affects [Stage block](#stage-block), [Field
@@ -1238,7 +1238,7 @@ In core:
 ### 2026-10-02: A pipeline with no results ungrades
 
 State: proposed. Discussion:
-[#20](https://github.com/zinc-sig/affairs/pull/20), first opened as
+[#30](https://github.com/zinc-sig/affairs/pull/30), first opened as
 [#22](https://github.com/zinc-sig/affairs/pull/22). Implemented in core by
 [zinc-sig/core#640](https://github.com/zinc-sig/core/pull/640) and in the
 console by [zinc-sig/ui#564](https://github.com/zinc-sig/ui/pull/564).
@@ -1341,7 +1341,7 @@ in [zinc-sig/ui#564](https://github.com/zinc-sig/ui/pull/564).
 ### 2026-10-12: Components scored by a level staff pick
 
 State: proposed. Discussion:
-[#20](https://github.com/zinc-sig/affairs/pull/20).
+[#30](https://github.com/zinc-sig/affairs/pull/30).
 
 Affects [Component block](#component-block), [Dynamic
 components](#dynamic-components), [Validate
@@ -1520,7 +1520,7 @@ level picker to the override.
 ### 2026-10-26: Pipelines select their submission files
 
 State: proposed. Discussion:
-[#20](https://github.com/zinc-sig/affairs/pull/20). It replaces the
+[#30](https://github.com/zinc-sig/affairs/pull/30). It replaces the
 submission parts amendment first opened as
 [#23](https://github.com/zinc-sig/affairs/pull/23), withdrawn after
 [zinc-sig/core#749](https://github.com/zinc-sig/core/pull/749) removed
