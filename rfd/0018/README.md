@@ -638,18 +638,20 @@ provides.
 ## The modality rule and online homework
 
 The two modalities are exclusive by rule: with the paper on, the console's
-file-upload surface is off and prescreen rules are shown as not applicable;
-with it off, the exam client is not offered. The console's document-presence
-gates read the examination switch instead. The rule lives on the console
-surface, and two server behaviours are recorded as known gaps: the exam
-client pushes answers as per-question text attachments through the same
-attachments route the console upload uses, and the push applies the
-collection's prescreen ignore filters with no modality check, so an ignore
-filter matching text files on a paper collection drops answers silently; and
-export eligibility keys on the type before this RFD and on the paper axis
-and "every collection past its stop", which makes a soft-cutoff paper
-activity exportable once its windows end. Server-side enforcement, if ever
-wanted, is a marker on the client's negotiated push and a refusal of
+file-upload surface and its prescreen rules are hidden; with it off, the
+exam client is not offered. The console's document-presence gates read the
+examination switch instead. The rule lives on the console surface. The
+prescreen is the one server-side consequence: while the paper is on, the
+core does not apply the collection's prescreen at the push, at finalize, or
+at a force-submit, so a prescreen written for uploads, such as an ignore
+filter on `*.txt`, never drops or refuses the exam client's answers. Two
+server behaviours are recorded as known gaps: the exam client pushes answers
+as per-question text attachments through the same attachments route the
+console upload uses, and the push does not refuse an upload to a paper
+activity; and export eligibility keys on the type before this RFD and on the
+paper axis and "every collection past its stop", which makes a soft-cutoff
+paper activity exportable once its windows end. Server-side enforcement, if
+ever wanted, is a marker on the client's negotiated push and a refusal of
 unmarked uploads on paper activities.
 
 A soft cutoff with a paper is supported under these rules:
