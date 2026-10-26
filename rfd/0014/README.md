@@ -1,7 +1,7 @@
 ---
 authors: Thomas Li
 state: published
-discussion:
+discussion: "[#25](https://github.com/zinc-sig/affairs/pull/25)"
 labels: direction, ux
 ---
 
