@@ -1,7 +1,7 @@
 ---
 authors: Thomas Li
 state: published
-discussion:
+discussion: "[#24](https://github.com/zinc-sig/affairs/pull/24)"
 labels: platform, security, interop, ux
 ---
 
