@@ -1729,3 +1729,229 @@ marker `submission-include`. The generator's selection is
 - **Fail a generated question with no answer file.** Without `optional`,
   one unanswered question would ungrade the whole delivery, where today it
   scores 0.
+
+### 2026-10-30: Marks of several standings
+
+State: proposed. Discussion:
+[#30](https://github.com/zinc-sig/affairs/pull/30). In review in core as
+[zinc-sig/core#777](https://github.com/zinc-sig/core/pull/777),
+[#778](https://github.com/zinc-sig/core/pull/778) and
+[#779](https://github.com/zinc-sig/core/pull/779).
+
+Affects [Component block](#component-block), [Validate
+phase](#validate-phase-schema-only), [Runtime evaluation
+errors](#runtime-evaluation-errors-during-formula-evaluation), and the
+2026-10-12 amendment *Components scored by a level staff pick*.
+
+#### Problem
+
+A component takes one staff decision: an override, which is a number that
+reaches the formula through `manual`, or a level pick. The formula's own
+expression decides whether that decision beats the pipeline, through the
+idiom `try(manual["<component>"], <score>)`. Four cases have no place in
+this:
+
+- **Several markers.** Double marking needs two marks on one component,
+  combined by a rule such as their mean. A second override replaces the
+  first.
+- **Suggestions.** A marker who is unsure, or an AI judge, needs to propose
+  a mark that doesn't count until someone confirms it.
+- **Combining a mark with the pipeline score.** When tests score a coding
+  answer 0 because of a syntax error, a marker or a judge can still give
+  credit for what the code does. Written as `max(manual["q3"], <score>)`,
+  a staff override can never bring the score lower than the tests' score.
+- **An automatic level.** The pipeline can't name a level of the
+  component's scale. It can only produce a number.
+
+#### Change
+
+**Marks and standings.** Every mark on a component of a delivery has a
+standing:
+
+| Standing | How it counts |
+| --- | --- |
+| `reference` | Never. It is shown beside the other marks: a suggestion. |
+| `counted` | It is one input to the component's combine rule. |
+| `authoritative` | It wins over everything else. A component has at most one current authoritative mark. |
+
+A staff override is an authoritative mark. A mark has an author: a staff
+member, or a source other than staff, such as the AI judge, with an opaque
+reference to that source's record. The same rules apply whatever the
+source.
+
+- **Superseding.** A new mark replaces the author's own current mark of the
+  same standing. A new authoritative mark also replaces the component's
+  current authoritative mark, whoever wrote it. Marks are kept as history.
+- **Confirming.** A mark may confirm another author's current reference
+  mark. The confirming mark copies its value, and may have any standing.
+  Only a suggestion can be confirmed.
+
+**The component's parts.** A component declares any of these:
+
+- **`score`**, an expression over the pipeline results that gives a number;
+- **`auto_level`**, an expression over the pipeline results that names one
+  of the component's levels;
+- **`level` blocks**, the scale that marks use;
+- **`marking`**, the combine rule.
+
+At most one of `score` and `auto_level` is declared; it is the
+component's automatic input. `auto_level` needs levels, and `min_score`
+needs `score`. A component may declare levels beside a `score` expression.
+A component with neither an automatic input nor levels takes number marks
+only.
+
+```hcl
+component "q3" {
+  covers    = ["q3"]
+  max_score = 10
+  score     = <the tests' score>
+  level "weak" {
+    points      = 2
+    description = "Runs, but misses most cases."
+  }
+  level "partial" {
+    points      = 5
+    description = "Right idea; fails on edge cases."
+  }
+  level "complete" {
+    points      = 10
+    description = "Handles every case."
+  }
+  marking {
+    required = 0
+    combine  = "max"
+  }
+}
+```
+
+On a component with levels, every mark names a level and is worth that
+level's points. Without levels, a mark is a number.
+
+**`marking`.**
+
+- **`required`** is the number of counted marks needed before the
+  combination runs (a whole number, default 0). The automatic input
+  doesn't count towards it.
+- **`combine`** is one of:
+  - `replace` (the default): the mean of the counted marks, or else the
+    automatic input. This is the counted-mark form of the
+    `try(manual[...], ...)` idiom;
+  - `max`: the highest input;
+  - `mean`: the mean of all inputs, the automatic input included.
+
+**Resolution.** Each component resolves in this order:
+
+1. **An authoritative mark with a value:** its points, clamped to
+   `[min_score, max_score]`. An authoritative mark that carries only a
+   correctness verdict changes no score. An authoritative level the
+   component no longer declares ungrades the component with code
+   `level_unknown`.
+2. **The integrity zero:** a component that covers a question that failed
+   the locked-template check scores 0. Only an authoritative mark lifts it,
+   whoever wrote it.
+3. **The combination:** at least one input, and at least `required`
+   counted marks. The automatic input is read only when the rule needs it:
+   - `replace` reads it only when there are no counted marks;
+   - `max` and `mean` always read it.
+
+   An automatic input that fails to evaluate, or an `auto_level` that names
+   an undeclared level, ungrades the component. The result is clamped to
+   `[min_score, max_score]`.
+4. **Pending:** otherwise. The code is `level_pending` with levels,
+   `grade_pending` without. Readers show it as awaiting a grade.
+
+Other rules:
+
+- **Stale marks drop out.** A counted or reference mark of the wrong kind,
+  or naming an undeclared level, drops out of the counted marks.
+- **Reference marks never count.**
+- **Naming a level.** The result names a level when one level decided it:
+  - the authoritative level;
+  - the level every counted mark shares under `replace`;
+  - the winning input under `max`. On a tie, a level beats a number, and an
+    earlier-declared level beats a later one;
+  - under `mean`, only when every input names the same level;
+  - the automatic level alone.
+
+**Components written the old way.** A component with a `score` expression
+and no levels, `auto_level` or `marking` keeps today's path: `manual[name]`
+is its authoritative mark's value, or else the mean of its counted marks,
+and its expression decides. It takes every standing, under the default rule.
+Only an authoritative mark lifts its integrity zero. The validate phase
+refuses `manual` in any other component.
+
+**Blind double marking.** While a component's counted marks are short of
+`required`, a staff reader doesn't see counted marks by other authors on
+that component.
+
+- **Always shown:** reference marks, the authoritative mark, the reader's
+  own marks and the automatic input.
+- **Exempt:** the course coordinator and the system administrator see
+  everything.
+- **Hidden means unknown.** A hidden mark answers as unknown.
+- **No reveal is recorded.** Marks hide again when the count drops below
+  `required`.
+
+What students see doesn't change: the score, and the deciding level where
+the breakdown is visible. Individual marks, their authors and suggestions
+are never shown to students.
+
+**Changes to the 2026-10-12 amendment.** That amendment's rules hold, with
+three exceptions:
+
+- A component may declare `score` and `level` blocks together. "Never both"
+  is withdrawn.
+- A level can be named by a counted mark, by the combination, or by
+  `auto_level`, not only by a staff pick.
+- The alternative it rejected, picking a level from pipeline results with
+  an expression, is adopted as `auto_level`. A level named that way isn't a
+  recorded decision with a marker. It is the automatic input, and any
+  authoritative mark outranks it.
+
+#### Effect on stored configs and scores
+
+- **Formulas.** A formula that declares no `marking`, no `auto_level`, and
+  no `score` beside levels scores exactly as before.
+- **Stored overrides** become current authoritative staff marks, with no
+  data rewrite.
+- **Generated exam formulas** keep the old form. Double marking a generated
+  component needs a `marking` block, and the generator doesn't emit one.
+- **A formula edit doesn't re-score.** A change to `required` or `combine`
+  reaches a delivery at its next grade, rescore or mark.
+- **Marks belong to a delivery,** as picks do.
+
+#### Implementation
+
+Core:
+
+- stores marks in an append-only ledger (`evaluation.question_score_override`,
+  migration 000056);
+- resolves them in the formula evaluation (`internal/pipeline`);
+- serves them through `/deliveries/{id}/components/{component}/marks` and
+  `/deliveries/{id}/marks`, with blind marking on the grading roster
+  (`internal/api/report`).
+
+Not yet built:
+
+- the console's marking interface (zinc-sig/ui);
+- the AI judge that writes suggestions.
+
+#### Alternatives considered
+
+- **Keep suggestions in a separate table, promoted to an override when
+  confirmed.** That is two homes for one concept, a mark. A marker's
+  unconfirmed mark is the same kind of thing as a judge's suggestion.
+- **A provisional score, blocked from release until confirmed.** Release
+  is a timestamp and checks nothing about grading. A gate would need
+  release to read scoring state, and scores written after release would
+  still be visible. With a reference standing, unconfirmed marks never
+  reach a score.
+- **Record when a component's marks are revealed,** so they stay visible
+  after a withdrawal. It is extra state, kept in step with the marks, for a
+  case where the marks have already been seen.
+- **Allow only staff to write authoritative marks.** Each write path offers
+  the standings it allows. The judge's offers reference and counted.
+- **Require counted level marks to agree,** pending moderation otherwise.
+  Combining works on points, so `mean` and `max` apply to levels as to
+  numbers. A rule that marks must agree can be added as another `combine`
+  value.
