@@ -290,6 +290,50 @@ the stored value, and a later change to a field's code default does not
 reach that instance. That is correct for one decision and wrong for a group
 of independent switches, which stay separate settings.
 
+A setting has one of three types: `string`, `asset`, or `object`. An object
+setting is declared with a Go struct, and its JSON value is that struct's
+object. An object declares no constraints, because its validator checks the
+fields together.
+
+**A list inside one object.** An object may hold a list of items, such as
+the model endpoints an instance allows. Test 4 of the placement rules asks
+whether there can be many of a value, each with an identity and a lifecycle,
+and such a list looks like domain data. A list belongs in one object setting
+when all of the following hold:
+
+- The administrator edits and saves the list as one decision, and the
+  validator checks the items together, for example that no two items share
+  an identifier.
+- An item has no lifecycle of its own. Nothing records who changed one item
+  or when, and no other row refers to an item by a foreign key.
+- The list stays short, tens of items, so every process can cache it and the
+  administrator read can return it whole.
+- One `If-Match` token covers the whole list. Two administrators who edit
+  different items conflict, and the second one reloads and saves again.
+
+A list that fails any of these is domain data and gets its own table under
+test 4. An item that holds a credential is a secret under test 1, and the
+object holds only the name of the connection that holds it.
+
+**How an object changes shape.** A stored row keeps the shape of the code
+that wrote it. The rules for a later change of the struct are:
+
+- A write is strict. The core rejects an unknown field at any depth, any
+  data after the value, and `null`.
+- A read is lenient. A field added to the struct reads as its zero value
+  from a row written before it, and a field removed from the struct is
+  ignored. The struct's zero values must therefore be safe, or the consumer
+  must treat a zero field as unset.
+- A field whose JSON type changes, or a value that is no longer an object,
+  does not decode on read, and the decode fallback applies (see the typed
+  contract).
+- A list field of the default is an empty list, so the default reads as `[]`
+  and not `null`.
+
+An object does not hold an asset reference. The asset delete check reads
+only settings of the `asset` type, so a reference inside an object would not
+prevent the asset's deletion.
+
 ## The typed contract
 
 `internal/systemsettings` is a leaf package that imports nothing from the
@@ -308,7 +352,33 @@ The package provides typed accessors. A consumer asks for a setting by its
 declared handle and receives a value of the declared type with the default
 applied; no code outside the package decodes the stored JSON. The core and
 the extensions are one binary at one version, so every process holds the
-same table.
+same table. A declaration whose Go type does not fit its setting type fails
+at startup: a string setting is a `string`, an asset setting an asset
+reference, and an object setting a struct.
+
+### The decode fallback
+
+A decided setting whose stored value does not decode into the setting's type
+resolves to its constant default. One bad row then cannot fail every read,
+and an instance keeps working after a change of shape. The row still counts
+as a recorded decision, and the fallback is reported in three places:
+
+- **To the consumer.** Besides the plain accessor, each setting's handle
+  offers an accessor that returns the value and a decode error. A consumer
+  for which the default is not a safe substitute for the recorded decision
+  checks the error and refuses to act. For example, a consumer of a list of
+  allowed endpoints sends nothing, rather than treating the default empty
+  list as the administrator's decision.
+- **To the administrator.** Each entry of the administrator read carries
+  `decode_error`: the reason the stored value does not decode, or null.
+  While it is set, the entry's value is the default. The administrator
+  corrects the setting with a new write or resets it with `DELETE`.
+- **To ops.** The loader of every process logs a warning when a stored value
+  does not decode, once for each revision of the row.
+
+A stored `null` for a string or object setting does not decode. A value that
+decodes but that the current validator would reject is served as stored; the
+validator runs on writes only.
 
 ## Writes
 
@@ -351,8 +421,10 @@ guarantees that every process converges.
   Each entry carries the resolved value, the default, whether a decision is
   recorded, the ceiling where one applies, `updated_at`, and `updated_by`
   with the administrator's name. It also carries the setting's type
-  (`string` or `asset`), whether it is public, and its constraints, so the
-  console can choose an editor and check a value before sending it. A read
+  (`string`, `asset`, or `object`), whether it is public, its constraints,
+  and `decode_error` (see the decode fallback), so the console can choose an
+  editor, check a value before sending it, and show a stored value that no
+  longer decodes. A read
   for an undeclared owner returns 404.
 - **Everyone, including unauthenticated clients,** reads the public subset
   through `GET /v1/instance`, which describes the instance to a client
@@ -663,6 +735,9 @@ move to an owner-held key.
 | Placement rules and setting requirements | proposed |
 | Postgres as the store, read directly, cached, notified over core NATS | proposed |
 | Typed leaf package with constant defaults | proposed |
+| Object settings: strict on write, lenient on read, no constraints served | proposed |
+| A short list edited as one decision may be one object setting | proposed |
+| A stored value that does not decode resolves to the default and is reported to the consumer, the administrator, and the log | proposed |
 | Write routes, `system#admin`, `If-Match` | proposed |
 | Secrets as owner-held connections with a write-only API | proposed |
 | Secret never reaches a process that handles untrusted content | proposed |
