@@ -1919,6 +1919,10 @@ three exceptions:
 - **A formula edit doesn't re-score.** A change to `required` or `combine`
   reaches a delivery at its next grade, rescore or mark.
 - **Marks belong to a delivery,** as picks do.
+- **Marking before grading.** Staff may mark any committed delivery, scored
+  or not. Where the formula reads a pipeline that has no results yet, the
+  score stays ungraded until grading brings them, and grading then reads
+  every mark again.
 
 #### Implementation
 
