@@ -1041,3 +1041,917 @@ Listed explicitly to mark the boundary for follow-up RFDs:
 - **Cross-file `import` / `include`.** A pipeline config and a formula config are each one self-contained HCL file. Sharing fragments across configs is not supported in v3.
 - **Stdout/stderr size caps and per-stage output limits.** The runtime imposes its own caps; per-stage configurable output limits are a runtime RFD's concern.
 - **UI changes for the new HCL editor.** The `apps/console` editor consumes a schema produced by reflecting on the v3 Go structs (`schemagen`); the schema is updated as part of v3 implementation. The visual design of the editor is a separate UI track.
+
+## Amendments
+
+Amendments record changes to the design above after this RFD merged. The
+body is left as written, as the design record. Where an amendment and the
+body disagree, the amendment is authoritative.
+
+### 2026-09-28: Dependencies gate by scenario code
+
+State: proposed. Discussion:
+[#30](https://github.com/zinc-sig/affairs/pull/30). Implemented in core
+by [zinc-sig/core#623](https://github.com/zinc-sig/core/pull/623).
+
+Affects [Stage block](#stage-block), [Field
+definitions](#field-definitions) (`skipped`), and [Validate-phase
+warnings](#validate-phase-warnings-non-fatal).
+
+#### Problem
+
+The body gates whole stages: if any dependency ends `failed`, `error`, or
+`skipped`, every scenario of the dependent stage is skipped. One scenario
+that fails is enough to fail its stage.
+
+That rule defeats the idiom the body names as the common case,
+`compile`, `execute`, `test`. The RFD's own
+[`example-pipeline.hcl`](example-pipeline.hcl) shows it. In
+`programming-q1`, `execute` runs scenarios `small`, `medium`, and `large`,
+and `test` depends on `execute` by the implicit default. The formula in
+[`example-formula.hcl`](example-formula.hcl) awards 20, 30, and 50 percent
+of the question's marks for those three scenarios. If `large` times out,
+`execute` ends `error`, every `test` scenario is skipped, and the
+component scores 0, although `small` and `medium` produced correct output.
+The formula's per-case weighting never applies in the case it was written
+for.
+
+Each workaround available under the body gives up a different guarantee:
+
+- `test` with `depends_on = ["compile"]` compares every scenario, but no
+  dependency then orders `test` after `execute`. The body describes
+  `depends_on = []` as "useful for stages that should run in parallel with
+  the first stage", so a runtime that runs independent stages in parallel
+  would let `test` read an output file `execute` has not yet written. The
+  runtime runs stages one at a time, which is a property of the
+  implementation, and the contract does not promise it.
+- Checking `succeeded(sc.execute) && succeeded(sc.test)` per scenario in
+  the formula corrects the score only when combined with the workaround
+  above, and the results still show the comparison of a failed run as a
+  pass.
+- One stage pair per scenario (`execute_small`, `test_small`, and so on)
+  gates correctly, but stages run one at a time, so the scenarios of a
+  stage no longer run in parallel, and N scenarios become 2N stages.
+
+The body already defines the identity the idiom needs. [Scenarios](#scenarios)
+states that "the same code across different stages of the same pipeline
+refers to the same logical scenario", and the formula namespace is keyed
+by that code. Gating is the one part of the contract that ignores it.
+
+#### Decision
+
+Every entry in a stage's `depends_on`, explicit or the implicit previous
+stage, is a dependency edge from the dependent stage S to the dependency
+stage D. The edge is **matched** when every scenario code of S, after
+dynamic expansion, is also a scenario code of D. Otherwise the edge is
+**unmatched**.
+
+- An unmatched edge gates the whole stage, as in the body: every scenario
+  of S is skipped when D ends `failed`, `error`, or `skipped`.
+- A matched edge gates per scenario: scenario X of S is skipped when
+  scenario X of D does not satisfy [`succeeded()`](#hcl-functions), so when it exited
+  non-zero, timed out, carries an `error`, or was itself skipped. The
+  other scenarios of S run.
+- A scenario of S is skipped when any of its edges skips it.
+- Every edge orders stages as before. Matching changes which scenarios of
+  S are skipped, and nothing else.
+- Two stages that each have only the implicit `default` scenario form a
+  matched edge. Per-scenario and whole-stage gating give the same result
+  there.
+
+The edge is classified as a whole, so an accidental overlap of codes
+cannot narrow a dependency. Suppose `compile` has scenarios `a` and `b`,
+two builds that every test needs, and `run` has scenarios `a`, `b`, and
+`c`. Matching code by code would let `run`'s `a` start after `compile`'s
+`b` failed. Under the edge rule, `c` has no counterpart in `compile`, the
+edge is unmatched, and every `run` scenario waits for the whole `compile`
+stage.
+
+| S (codes) | D (codes) | Edge | Effect |
+|---|---|---|---|
+| `execute` (`small`, `medium`, `large`) | `compile` (`default`) | Unmatched | A failed `compile` skips every `execute` scenario. |
+| `test` (`small`, `medium`, `large`) | `execute` (`small`, `medium`, `large`) | Matched | A timed-out `execute.large` skips `test.large`. `test.small` and `test.medium` run. |
+| `run` (`run_case_1`) | `compile` (`compile_a`, `compile_b`) | Unmatched | `run_case_1` runs when both `compile` scenarios succeed. |
+| `run` (`a`, `b`, `c`) | `compile` (`a`, `b`) | Unmatched, with a warning | Every `run` scenario waits for the whole `compile` stage. |
+| `report` (`default`) | `test` (`small`, `medium`, `large`) | Unmatched | Any failed `test` scenario skips `report`, as in the body. |
+
+With this rule, `example-pipeline.hcl` grades as its formula intends
+without changes: a timed-out `large` costs the 50 percent weighted on
+`large`, and `small` and `medium` keep theirs.
+
+#### Stage state
+
+The body's stage state table covers stages whose scenarios all ran or
+were all skipped. A matched edge can skip some scenarios of a stage while
+the others run. Such a stage is `error` if a scenario that ran is `error`,
+and `failed` otherwise. A scenario skipped by a matched edge is a scenario
+that did not pass, so its stage did not succeed, and stages that depend on
+it through an unmatched edge are skipped as the body describes. `skipped`
+stays exclusive: a stage is `skipped` when every one of its scenarios was
+skipped.
+
+#### Result emission
+
+`skipped: true` can appear on some scenarios of a stage. The field
+definition reads "True if the scenario was gated out by a dependency: the
+whole dependency stage through an unmatched edge, or the same-coded
+scenario through a matched edge." The other fields of a skipped scenario
+keep the values the body gives them. `succeeded()` and `failed()` both
+return false for a skipped scenario, as the body defines.
+
+#### Validate-phase warning
+
+The body's scenario-symmetry warning compares scenario codes across the
+stages that consume them. The implementation compares every pair of
+stages with two or more scenarios, whether or not a dependency joins them.
+That reports a pipeline that splits its scenarios across stage pairs,
+sample cases in one pair and hidden cases in another so they can carry
+different visibility, as asymmetric throughout.
+
+The warning is scoped to dependency edges: a warning is raised for an edge
+whose stages share at least one scenario code while S has a code that D
+lacks, because that edge falls back to whole-stage gating, which is not
+what the shared codes suggest. Matched edges, edges with no shared codes,
+and stages that no dependency joins produce no warning. The validate phase
+checks static scenario codes. The runtime classifies edges on the
+expanded codes.
+
+#### Effect on stored configs
+
+No syntax changes, and every config that validates still validates.
+
+A config with a matched edge between stages that declare scenarios
+changes behaviour: a failed scenario skips its own counterpart downstream
+and no other. This covers `example-pipeline.hcl`, the trial examination
+reference in core (`cmd/help/scenarios/trial_examination.go`, where `test`
+depends on `execute` by the implicit default), and hand-written coding
+fragments in the `compile`, `execute`, `test` shape.
+
+Re-grading a submission graded under whole-stage gating can change its
+score. For a formula that awards marks through `succeeded()`, the score
+can only rise: a scenario that was skipped either runs and succeeds or
+stays unsuccessful. A formula that counts `failed()` can fall, because a
+skipped scenario is not failed and a scenario that runs and fails is.
+Before the runtime adopts the rule, count the stored configs with a
+matched edge between stages that declare scenarios, so the re-grade
+exposure is known.
+
+#### Where the rule is implemented
+
+In core:
+
+- The grading workflow's stage loop (`workflow/grading/run_workflow.go`,
+  with `stageGated` in `workflow/grading/helpers.go`) computes the skipped
+  scenarios of a stage before scheduling it and runs the rest.
+- `DeriveStageState` (`internal/pipeline/evaluate.go`) derives the state
+  of a partially skipped stage by the stage state rule above.
+- The interactive sandbox orchestrator (`internal/sandbox/stage/orchestrator.go`)
+  applies the same rule, so a student's Run gates the way grading does.
+- `lintScenarioSymmetryWarning` (`internal/pipeline/lint.go`) is scoped to
+  dependency edges.
+- The package documentation (`internal/pipeline/README.md`,
+  `internal/pipeline/USAGE.md`) states the rule once it is implemented.
+
+#### Alternatives considered
+
+- **An explicit per-scenario attribute**, for example
+  `scenario_depends_on = ["execute"]` beside `depends_on`. It changes no
+  stored behaviour. Rejected because it adds a second dependency
+  vocabulary, and the body's idiom keeps its defect until every author
+  opts in, although the body already defines same code as same scenario.
+- **Matching code by code**, so each scenario of S waits for the
+  same-coded scenario of D when D has one and for the whole of D when it
+  does not. Rejected because an accidental overlap of codes narrows a
+  dependency, as in the build-variant example above.
+- **An order-only dependency** (`after = ["execute"]`) that orders stages
+  without gating, with per-scenario success checks in the formula.
+  Rejected because the results show the comparison of a failed run as a
+  pass, and every formula has to repeat the run check for each scenario.
+- **One stage pair per scenario.** Rejected because stages run one at a
+  time, so the scenarios of a stage lose their parallelism, and the
+  pipeline grows to two stages per scenario.
+- **Whole-stage gating with the dependent stage opted out of the
+  dependency** (`depends_on = ["compile"]` on `test`). Rejected because
+  the order of `execute` and `test` then rests on the runtime running
+  stages one at a time, which the contract does not promise.
+
+### 2026-10-02: A pipeline with no results ungrades
+
+State: proposed. Discussion:
+[#30](https://github.com/zinc-sig/affairs/pull/30), first opened as
+[#22](https://github.com/zinc-sig/affairs/pull/22). Implemented in core by
+[zinc-sig/core#640](https://github.com/zinc-sig/core/pull/640) and in the
+console by [zinc-sig/ui#564](https://github.com/zinc-sig/ui/pull/564).
+
+Affects [`pipeline.<name>.scenarios` schema](#pipelinenamescenarios-schema)
+(missing-key semantics, heterogeneous keys, empty pipelines), [HCL
+functions](#hcl-functions) (`length`, `succeeded`, `failed`, and the
+typical patterns), and [Runtime evaluation
+errors](#runtime-evaluation-errors-during-formula-evaluation).
+
+#### Problem
+
+The body gives a declared pipeline that produced no results an empty
+`scenarios` map, and expects the author to defend against it with `try()`
+or explicit conditionals. Nothing in a comprehension over an empty map
+fails, so `try()` has nothing to catch, and the hard-fail rule never
+applies:
+
+- `alltrue([for _, s in pipeline.q1.scenarios : succeeded(s.test)]) ? 30 : 0`,
+  the body's own all-or-nothing pattern, awards full marks, because
+  `alltrue([])` is `true`.
+- `sum([...])` and `length([...])` comprehensions award 0, the silent zero
+  the hard-fail rule exists to prevent.
+- `length(pipeline.<name>.scenarios) == 0`, the defence the body suggests,
+  is an evaluation error: the scenarios value is an object, which
+  `length()` does not accept.
+
+A pipeline has no results when its run failed and its retry failed, when a
+configuration fault stopped the run, when the run was cancelled, or when
+the formula declares a pipeline the pipeline config does not define.
+
+The body also states that `succeeded()` and `failed()` are null-permissive
+for a missing field path, so that iterating `pipeline.<name>.scenarios`
+"silently skips" the implicit `"default"` code of a `compile` stage without
+scenarios. A reference to a missing attribute fails before the function is
+called, so `succeeded(s.test)` on that code is an evaluation error, and the
+all-or-nothing pattern ungrades every run of a pipeline with such a
+`compile` stage. Were the reference to yield null instead, `succeeded()`
+would return `false` and the pattern would award 0; neither skips the code.
+
+#### Change
+
+- A declared pipeline that produced no results is absent from the
+  `pipeline` namespace. A reference to it is an evaluation error, so the
+  score is ungraded unless the expression catches the error with `try()`.
+  A manual override in `try(manual["<component>"], ...)` still applies, and
+  `try(<expression>, <fallback>)` still scores the fallback when the author
+  wants a missing run to score it.
+- The ungraded diagnostic names the declared pipelines with no results.
+- A pipeline with partial results is unchanged: `scenarios` holds the
+  scenarios that produced results.
+- `succeeded()` and `failed()` return `false` for a null argument. A
+  reference to a stage the scenario lacks is an evaluation error. To
+  iterate only the scenarios that have a stage, filter with `can()`:
+
+  ```hcl
+  score = alltrue([for _, s in pipeline.q1.scenarios :
+                   succeeded(s.test) if can(s.test)]) ? 30 : 0
+
+  score = sum([for code, s in pipeline.main.scenarios :
+               local.marks[code] if can(s.test) && succeeded(s.test)])
+  ```
+
+- `length()` counts a comprehension over the scenarios, such as
+  `length([for code, s in pipeline.<name>.scenarios : code])`, not the
+  scenarios value itself.
+
+#### Effect on stored scores
+
+The rule applies at the next evaluation of a delivery's score. Stored
+scores are not re-evaluated by this change. A re-grade that runs the
+pipelines again applies it. A rescore or an override re-evaluates the
+formula against the stored results but refuses to replace a graded score
+with an ungraded one, so it does not withdraw a score that the empty-map
+rule over-awarded. Scores already written are left as they are; no
+backfill is planned.
+
+#### Implementation
+
+Core evaluates formulas in `internal/pipeline/evaluate.go`
+(`buildPipelineResultsNamespace`), changed in
+[zinc-sig/core#640](https://github.com/zinc-sig/core/pull/640). The
+console's grading templates and formula snippets adopt the `can()` filter
+in [zinc-sig/ui#564](https://github.com/zinc-sig/ui/pull/564).
+
+#### Alternatives considered
+
+- **Keep the empty map and fix only the documentation and templates.** This
+  leaves every stored formula that uses the all-or-nothing pattern
+  awarding full marks for a run that never happened.
+- **Ungrade the whole score whenever a declared pipeline has no results.**
+  This also ungrades components that do not read the pipeline, and
+  overrides the author's explicit `try()` fallback and staff's manual
+  override.
+- **An unknown value in place of the missing pipeline.** Unknown values
+  propagate through expressions without an error, and `try()` returns an
+  unknown result rather than its fallback, so the failure surfaces as a
+  non-numeric score with no indication of its cause.
+
+### 2026-10-12: Components scored by a level staff pick
+
+State: proposed. Discussion:
+[#30](https://github.com/zinc-sig/affairs/pull/30).
+
+Affects [Component block](#component-block), [Dynamic
+components](#dynamic-components), [Validate
+phase](#validate-phase-schema-only), [Runtime evaluation
+errors](#runtime-evaluation-errors-during-formula-evaluation), and the
+pipeline config's [Top-level structure](#top-level-structure) (the number
+of pipelines).
+
+#### Problem
+
+The body gives a component one way to score: a `score` expression over
+pipeline results. Work that a person has to judge, such as an essay or a
+report, has no place in it. Core fills the gap with two mechanisms the body
+does not describe:
+
+- a per-component staff override, stored per delivery, whose number reaches
+  the formula through a reserved `manual` namespace (`manual["<component>"]`,
+  in scope only in a component's `score`);
+- generated exam formulas that give each essay a manual-only component,
+  `score = try(manual["<qid>"], 0)`.
+
+This leaves four problems:
+
+- **No shared scale.** A marker types any number from 0 to `max_score`.
+  Two markers marking the same essay have nothing to agree on but the
+  number.
+- **Silent zero.** An essay nobody has marked scores 0 and the delivery
+  reads as graded, which is the silent zero the hard-fail rule and the
+  2026-10-02 amendment exist to prevent.
+- **Upload assignments cannot be marked.** Core refuses an override on an
+  activity with no examination document, so an upload assignment has no
+  way to take a staff-judged mark at all.
+- **Marking stops at the first pick.** Core refuses an override whose
+  result is ungraded, even when the delivery was already ungraded. Once
+  an unmarked component is ungraded rather than 0, a marker could never
+  record the first of several picks.
+
+A paper made only of essays also has nothing to run: its pipeline config
+declares no pipelines, which the body forbids, and the grading run stops
+before it evaluates the formula.
+
+#### Change
+
+**Level blocks.** A component declares either a `score` expression or
+`level` blocks, never both:
+
+```hcl
+component "q7" {
+  covers    = ["q7"]
+  title     = "Essay: feedback loops"
+  max_score = 10
+  level "missing" {
+    points      = 0
+    description = "No relevant argument."
+  }
+  level "partial" {
+    points      = 5
+    description = "Explains the loop but not the response to disturbance."
+  }
+  level "complete" {
+    points      = 10
+    description = "Explains the loop and both responses."
+  }
+}
+```
+
+- The label is the level id (`[a-zA-Z0-9_-]+`). Ids are unique within the
+  component, compared without case.
+- A level component has at least two levels.
+- `points` is a parse-phase expression that may read `local.*` and
+  `document.*` but not `pipeline.*` or `manual`. This is stricter than
+  `max_score`, which tolerates `manual`. Its value lies in
+  `[0, max_score]`. The validate phase checks literals; a value outside
+  the range at evaluation ungrades the component rather than clamping it.
+- `description` is required. Levels display in declaration order.
+- `min_score` is refused on a level component; `weight`, `covers` and
+  `title` mean what they mean on any component.
+- The validate phase warns when no level reaches `max_score`.
+- `level` blocks are allowed in static components only, not inside
+  `dynamic "component"` content.
+
+Several criteria for one question are several level components with the
+same `covers`.
+
+**Picks.** Staff pick a level for a delivery's level component through the
+same per-component override that carries a number today. A level component
+accepts only a pick, and any other component only a number. The `manual`
+namespace is unchanged; a level component has no `score` expression and
+does not read it.
+
+**Evaluation.** A level component scores as follows:
+
+| Stored override | Component |
+| --- | --- |
+| A pick of a declared level | Scores that level's `points` |
+| A pick of a level no longer declared | Ungraded, code `level_unknown` |
+| A number (the component had a `score`) | Treated as no pick |
+| None | Ungraded, code `level_pending` |
+
+A pick stored for a component that now has a `score` expression is
+ignored, and the expression scores as usual. In both mismatched cases the
+breakdown flags the stored override as stale, so staff can see why it no
+longer counts.
+
+The ungraded diagnostic carries a `code`: `level_pending`, `level_unknown`
+or `level_invalid`. The last marks `points` outside `[0, max_score]`. As for any ungraded component,
+the delivery is ungraded, `scoring.total` is not evaluated, and the
+components that did evaluate keep their scores in the breakdown. A reader
+shows a `level_pending` component as awaiting a grade, not as a failure.
+
+Students see the picked level's id and description where the breakdown is
+visible (`score_visibility = "breakdown"`), and nothing more at
+`"total_only"`.
+
+**Guard.** An override or a rescore whose result is ungraded is accepted
+when the delivery was not graded before. When it was graded, the result
+is refused unless it is ungraded only by `level_pending` components and
+carries no other diagnostic. So marking one of several essays, marking
+the last one, and removing the only pick are all accepted, while an
+override or rescore that leaves the formula failing for any other reason,
+including a pipeline with no results or a `scoring.total` error, still
+cannot withdraw a graded score. This narrows the refusal described in the
+2026-10-02 amendment's *Effect on stored scores*; that refusal still
+holds whenever any other diagnostic is present.
+
+**Activities with no paper.** Overrides and picks apply to any activity
+with a formula, with or without an examination document.
+
+**Pipeline configs with no pipelines.** A pipeline config may declare no
+`pipeline` blocks. Its grading run dispatches nothing and evaluates the
+formula directly, so a paper made only of essays gets a score row at
+grading time. A rescore likewise accepts a delivery with no results when
+its pipeline config declares no pipelines.
+
+#### Effect on stored configs and scores
+
+- A formula without `level` blocks behaves as before.
+- Generated exam formulas emit a level component for an essay only when
+  its marking scheme declares levels; other essays keep the manual-only
+  form. Nothing is backfilled. The essay's free-text rubric guidance stays
+  beside the levels.
+- A formula edit does not re-score. A change to a level's `points` reaches
+  a delivery at its next grade, rescore or override.
+- Picks belong to a delivery and do not carry over to a resubmission. With
+  `score_selection = "best"` an earlier graded attempt stays of record;
+  with `"latest"` the new attempt is of record and waits for its picks.
+
+#### Implementation
+
+Not started. Core changes the formula spec, lint and evaluation
+(`internal/pipeline`), the override table and the three score writers
+(`internal/api/report`: grading fan-in, rescore, override), the grading
+workflow's no-pipeline path behind a workflow version marker, and the
+exam formula generator (`internal/pipeline/configgen`). The console adds a
+level picker to the override.
+
+#### Alternatives considered
+
+- **A separate `rubric` block that components reference.** This is the
+  shape of the rubric in ZINC v3 (hkust-contrib/zinc), whose level model this
+  amendment otherwise follows. In this formula the component is already
+  the unit that scores and that staff override, so a second block would
+  split one criterion across two places.
+- **A rubric document visible to the pipeline**, like `document.examination`
+  with points carved out. It is needed only if judging runs inside the
+  pipeline. It does not: staff pick levels through the override, and the
+  pipeline stays score-blind.
+- **Score an unpicked level component 0.** This is the essay's behaviour
+  today. A release before marking shows students a total with a silent 0.
+- **Allow a number on a level component.** This defeats the shared scale;
+  a missing step belongs in the levels.
+- **Pick a level from pipeline results with an expression.** A `score`
+  expression already does this. Keeping picks to staff keeps every level a
+  recorded decision with a marker.
+
+### 2026-10-26: Pipelines select their submission files
+
+State: proposed. Discussion:
+[#30](https://github.com/zinc-sig/affairs/pull/30). It replaces the
+submission parts amendment first opened as
+[#23](https://github.com/zinc-sig/affairs/pull/23), withdrawn after
+[zinc-sig/core#749](https://github.com/zinc-sig/core/pull/749) removed
+submission parts. Implemented in core by
+[zinc-sig/core#753](https://github.com/zinc-sig/core/pull/753), on the
+agent protocol 4 of
+[zinc-sig/core#716](https://github.com/zinc-sig/core/pull/716).
+
+Affects [Pipeline block](#pipeline-block) (a `submission` block the body
+omits) and [Validate phase](#validate-phase-schema-only) (the rules for
+that block).
+
+#### Problem
+
+Core's pipeline parser accepts a `submission` block the body does not
+document (`internal/pipeline/spec_pipeline.go`, `internal/pipeline/parse.go`):
+
+```hcl
+pipeline "q3" {
+  submission {
+    file = "src/main/java/app/Solution.java"
+  }
+}
+```
+
+A **delivery** is the set of files a student hands in for an activity.
+Every pipeline run mirrors the whole delivery into its workspace root
+(`workflow/grading/staging.go`). The block names the workspace path of
+one file from that delivery, the **answer**: the root file whose name
+minus its extension equals the pipeline label, so `q3.py` for the
+pipeline `"q3"`. The agent places the answer after the teacher's objects,
+and the answer wins its target, so a skeleton stub at the same path is
+replaced (`AnswerSpec` in `internal/pipeline/agentcontract/contract.go`).
+The exam client writes `<qid>.<ext>` for a coding question and the
+question id is the pipeline label, so the rule holds without
+configuration. Without the block the answer keeps its delivered name at
+the root.
+
+The rule has two limits. It places at most one file, chosen by stem, so a
+pipeline cannot receive several delivered files at a chosen location and
+cannot choose among several delivered files by name. And the mirror puts
+every delivered file into every run: a report pipeline sees the source
+tree, a build pipeline sees the report, and a stray file reaches every
+workspace.
+
+What a student may hand in is decided by the submission extension's
+**collection prescreen**: required paths, starter files, and ignore
+filters, attached per collection, so the collections of one activity, such
+as the groups of a group project, can require different files. The
+prescreen is the only gate at finalize. A pipeline has no way to say which
+of the admitted files it grades, and it must not learn which collection a
+delivery came from: the two rules compose only if neither reads the other.
+
+#### Change
+
+The block gains `include`, `dir`, and `optional`:
+
+```hcl
+pipeline "report" {
+  submission {
+    include  = ["report.pdf", "report.docx"]
+    file     = "in/report.pdf"   # exactly one selected file, placed and renamed
+    optional = true              # no match places nothing and the run proceeds
+  }
+}
+
+pipeline "app" {
+  submission {
+    include = ["src/**"]
+    dir     = "app"              # src/lib/io.c lands at app/lib/io.c
+  }
+}
+```
+
+- `include` lists glob patterns over the delivery's **stored names**: the
+  names submission keeps, relative and separated by `/`, with the first
+  segment of a folder upload dropped, so `project/src/a.py` is stored as
+  `src/a.py`. `*` matches within one segment and `**` across segments.
+  Only the selected files reach the workspace.
+- With `include` alone, each selected file keeps its stored path.
+- `file` with `include` places the one selected file at the given
+  workspace path, which may rename it.
+- `dir` places every selected file under the given directory after
+  removing the patterns' **base**: the literal leading folder that all of
+  them share, ending at a path-segment boundary. `src/**` and
+  `src/lib/*.c` have the base `src/`; `q8/**` and `q8b/**` have none, so
+  they cannot be mounted with `dir`.
+- `optional = true` lets a selection that matches nothing place nothing,
+  and the run proceeds.
+- `file` and `dir` exclude each other, and `dir` and `optional` need
+  `include`. A block with `file` and no `include` keeps the answer rule
+  above, so every config written before this amendment keeps its meaning.
+
+| Block | Files in the workspace |
+|---|---|
+| None | The whole delivery, mirrored at the root. |
+| `file` alone | The whole delivery, with the answer moved to `file`. |
+| `include` | Each selected file at its stored path. |
+| `include` and `file` | The one selected file at `file`. |
+| `include` and `dir` | Each selected file under `dir`, with the base removed. |
+
+**Validate phase.** The rules check the block's shape: it sets `include`,
+`file`, or both; `file` and `dir` exclude each other; `dir` and `optional`
+need `include`; `include` lists at least one pattern, each relative,
+separated by `/`, with no empty, `.`, or `..` segment, no backslash, and
+valid glob syntax; and the patterns of a `dir` block have a base. `file`
+and `dir` are workspace paths: clean, relative, with no `..` segment, and
+outside the reserved workspace directories. Nothing declares at the
+activity which files a delivery holds, so the rules cannot check a pattern
+against one; a pattern that matches nothing is found when a delivery is
+graded.
+
+**Staging.** A run of a pipeline with `include` does not mirror the
+delivery and does not choose an answer by stem. Core matches the patterns
+against the stored names in the delivery's attachments manifest, which it
+reads when grading is triggered, and sends one student placement per
+selected file. The agent writes the teacher's objects first and the
+placements after them, so a selected file replaces a stub at its target. A
+file no pattern selects never reaches that workspace. A pipeline without
+`include` is staged as before.
+
+**A selection the delivery cannot satisfy fails the run** as a
+configuration failure before a container is dispatched, and the run is not
+retried:
+
+- no file matches and the block is not `optional`;
+- more than one file matches a `file` block, with or without `optional`;
+- a `dir` block selects a file named like the base itself, such as a file
+  `src` under `src/**`, which has no path below the base;
+- two placements land at one path, or one placement's path is a directory
+  of another's.
+
+The pipeline then has no results, so under the 2026-10-02 amendment a
+formula that reads it is ungraded with the diagnostic rather than scoring
+an empty workspace as 0.
+
+**Agent protocol.** Placement uses agent protocol version 4, which adds the
+student placement (RFD 0015, Decision 7). Every run of a pipeline with
+`include` is sent at version 4, even when the delivery holds no file it
+selects, so whether a run needs a rebuilt image is known from the config
+alone. An image whose agent predates version 4 fails the run with the
+"rebuild the environment image" failure that a protocol mismatch raises,
+which is not retried. Runs of pipelines without `include` keep the
+protocol version they use without this amendment.
+
+**Generated examination configs.** The examination generator (RFD 0014)
+selects each question's answer file by the name the exam client delivers,
+`<qid>.<ext>`:
+
+- each coding pipeline gets `include = ["<qid>.*"]` beside the `file` its
+  fragment names, and the fragment itself cannot set `include`, `dir`, or
+  `optional`;
+- each batched MC, MSQ, TF, and SA pipeline gets the literal list of its
+  questions' answer files, such as `include = ["q1.txt", "q4.txt"]`, with
+  no `file` or `dir`, so each answer stays at its stored path.
+
+Both always set `optional = true`. An unanswered question has no answer
+file; it scores 0 as its tests fail, rather than leaving the whole delivery
+ungraded. A coding question never holds more than one matching file, because
+the exam client names each answer after its question and its push replaces
+the delivery's file set as a whole.
+
+#### Effect on stored configs
+
+A stored config changes only when its author adds `include`. A generated
+examination config gains the selection at its paper's next materializing
+save, such as a question publish or a marking-scheme save, or through the
+manual materialization endpoint; nothing backfills, so an examination keeps
+the whole-delivery mirror until then.
+
+#### Implementation
+
+The block's grammar and rules are in `internal/pipeline/spec_pipeline.go`
+(rules `submission-selects`, `submission-file-or-dir`,
+`submission-needs-include`, `submission-include-patterns`, and
+`submission-dir-base`) and the fragment rule in
+`internal/pipeline/spec_fragment.go`. The matcher and the base are
+`internal/pipeline/globmatch` (`Select`, `Base`). Staging is
+`placementInputFor` in `workflow/grading/staging.go`, behind the workflow
+marker `submission-include`. The generator's selection is
+`internal/pipeline/configgen` (`withAnswerSelection` and
+`emitModalityPipeline`).
+
+#### Alternatives considered
+
+- **Submission parts.** An activity-level declaration of named groups of
+  delivered files, each with acceptance rules, checked at finalize; a
+  passing delivery was stamped with its mapping from part to files, and a
+  pipeline placed a part by name. It was built
+  ([zinc-sig/core#729](https://github.com/zinc-sig/core/pull/729), closed)
+  and removed
+  ([zinc-sig/core#749](https://github.com/zinc-sig/core/pull/749)). It was
+  to replace the collection prescreen with one declaration per activity,
+  which cannot require different files from different collections, and it
+  gave grading a second record of what a delivery holds. Selection by the
+  pipeline keeps the prescreen as the gate and adds a concept to nothing but
+  the block.
+- **A save-time check of each pattern.** Checking that a pattern can match
+  a file needs a declaration of what deliveries hold. The prescreen
+  differs per collection and a pipeline does not know collections, so a
+  pattern that matches nothing is found at grading, with a diagnostic and
+  no grade of 0.
+- **Keep the whole-delivery mirror with `include` as a filter on the
+  answer.** Every delivered file would still reach every run, so a stray
+  or misplaced file could still change what a pipeline builds or reads.
+- **Fail a generated question with no answer file.** Without `optional`,
+  one unanswered question would ungrade the whole delivery, where today it
+  scores 0.
+
+### 2026-10-30: Marks of several standings
+
+State: proposed. Discussion:
+[#30](https://github.com/zinc-sig/affairs/pull/30). In review in core as
+[zinc-sig/core#777](https://github.com/zinc-sig/core/pull/777),
+[#778](https://github.com/zinc-sig/core/pull/778) and
+[#779](https://github.com/zinc-sig/core/pull/779).
+
+Affects [Component block](#component-block), [Validate
+phase](#validate-phase-schema-only), [Runtime evaluation
+errors](#runtime-evaluation-errors-during-formula-evaluation), and the
+2026-10-12 amendment *Components scored by a level staff pick*.
+
+#### Problem
+
+A component takes one staff decision: an override, which is a number that
+reaches the formula through `manual`, or a level pick. The formula's own
+expression decides whether that decision beats the pipeline, through the
+idiom `try(manual["<component>"], <score>)`. Four cases have no place in
+this:
+
+- **Several markers.** Double marking needs two marks on one component,
+  combined by a rule such as their mean. A second override replaces the
+  first.
+- **Suggestions.** A marker who is unsure, or an AI judge, needs to propose
+  a mark that doesn't count until someone confirms it.
+- **Combining a mark with the pipeline score.** When tests score a coding
+  answer 0 because of a syntax error, a marker or a judge can still give
+  credit for what the code does. Written as `max(manual["q3"], <score>)`,
+  a staff override can never bring the score lower than the tests' score.
+- **An automatic level.** The pipeline can't name a level of the
+  component's scale. It can only produce a number.
+
+#### Change
+
+**Marks and standings.** Every mark on a component of a delivery has a
+standing:
+
+| Standing | How it counts |
+| --- | --- |
+| `reference` | Never. It is shown beside the other marks: a suggestion. |
+| `counted` | It is one input to the component's combine rule. |
+| `authoritative` | It wins over everything else. A component has at most one current authoritative mark. |
+
+A staff override is an authoritative mark. A mark has an author: a staff
+member, or a source other than staff, such as the AI judge, with an opaque
+reference to that source's record. The same rules apply whatever the
+source.
+
+- **Superseding.** A new mark replaces the author's own current mark of the
+  same standing. A new authoritative mark also replaces the component's
+  current authoritative mark, whoever wrote it. Marks are kept as history.
+- **Confirming.** A mark may confirm another author's current reference
+  mark. The confirming mark copies its value, and may have any standing.
+  Only a suggestion can be confirmed.
+
+**The component's parts.** A component declares any of these:
+
+- **`score`**, an expression over the pipeline results that gives a number;
+- **`auto_level`**, an expression over the pipeline results that names one
+  of the component's levels;
+- **`level` blocks**, the scale that marks use;
+- **`marking`**, the combine rule.
+
+At most one of `score` and `auto_level` is declared; it is the
+component's automatic input. `auto_level` needs levels, and `min_score`
+needs `score`. A component may declare levels beside a `score` expression.
+A component with neither an automatic input nor levels takes number marks
+only.
+
+```hcl
+component "q3" {
+  covers    = ["q3"]
+  max_score = 10
+  score     = <the tests' score>
+  level "weak" {
+    points      = 2
+    description = "Runs, but misses most cases."
+  }
+  level "partial" {
+    points      = 5
+    description = "Right idea; fails on edge cases."
+  }
+  level "complete" {
+    points      = 10
+    description = "Handles every case."
+  }
+  marking {
+    required = 0
+    combine  = "max"
+  }
+}
+```
+
+On a component with levels, every mark names a level and is worth that
+level's points. Without levels, a mark is a number.
+
+**`marking`.**
+
+- **`required`** is the number of counted marks needed before the
+  combination runs (a whole number, default 0). The automatic input
+  doesn't count towards it.
+- **`combine`** is one of:
+  - `replace` (the default): the mean of the counted marks, or else the
+    automatic input. This is the counted-mark form of the
+    `try(manual[...], ...)` idiom;
+  - `max`: the highest input;
+  - `mean`: the mean of all inputs, the automatic input included.
+
+**Resolution.** Each component resolves in this order:
+
+1. **An authoritative mark with a value:** its points, clamped to
+   `[min_score, max_score]`. An authoritative mark that carries only a
+   correctness verdict changes no score. An authoritative level the
+   component no longer declares ungrades the component with code
+   `level_unknown`.
+2. **The integrity zero:** a component that covers a question that failed
+   the locked-template check scores 0. Only an authoritative mark lifts it,
+   whoever wrote it.
+3. **The combination:** at least one input, and at least `required`
+   counted marks. The automatic input is read only when the rule needs it:
+   - `replace` reads it only when there are no counted marks;
+   - `max` and `mean` always read it.
+
+   An automatic input that fails to evaluate, or an `auto_level` that names
+   an undeclared level, ungrades the component. The result is clamped to
+   `[min_score, max_score]`.
+4. **Pending:** otherwise. The code is `level_pending` with levels,
+   `grade_pending` without. Readers show it as awaiting a grade.
+
+Other rules:
+
+- **Stale marks drop out.** A counted or reference mark of the wrong kind,
+  or naming an undeclared level, drops out of the counted marks.
+- **Reference marks never count.**
+- **Naming a level.** The result names a level when one level decided it:
+  - the authoritative level;
+  - the level every counted mark shares under `replace`;
+  - the winning input under `max`. On a tie, a level beats a number, and an
+    earlier-declared level beats a later one;
+  - under `mean`, only when every input names the same level;
+  - the automatic level alone.
+
+**Components written the old way.** A component with a `score` expression
+and no levels, `auto_level` or `marking` keeps today's path: `manual[name]`
+is its authoritative mark's value, or else the mean of its counted marks,
+and its expression decides. It takes every standing, under the default rule.
+Only an authoritative mark lifts its integrity zero. The validate phase
+refuses `manual` in any other component.
+
+**Blind double marking.** While a component's counted marks are short of
+`required`, a staff reader doesn't see counted marks by other authors on
+that component.
+
+- **Always shown:** reference marks, the authoritative mark, the reader's
+  own marks and the automatic input.
+- **Exempt:** the course coordinator and the system administrator see
+  everything.
+- **Hidden means unknown.** A hidden mark answers as unknown.
+- **No reveal is recorded.** Marks hide again when the count drops below
+  `required`.
+
+What students see doesn't change: the score, and the deciding level where
+the breakdown is visible. Individual marks, their authors and suggestions
+are never shown to students.
+
+**Changes to the 2026-10-12 amendment.** That amendment's rules hold, with
+three exceptions:
+
+- A component may declare `score` and `level` blocks together. "Never both"
+  is withdrawn.
+- A level can be named by a counted mark, by the combination, or by
+  `auto_level`, not only by a staff pick.
+- The alternative it rejected, picking a level from pipeline results with
+  an expression, is adopted as `auto_level`. A level named that way isn't a
+  recorded decision with a marker. It is the automatic input, and any
+  authoritative mark outranks it.
+
+#### Effect on stored configs and scores
+
+- **Formulas.** A formula that declares no `marking`, no `auto_level`, and
+  no `score` beside levels scores exactly as before.
+- **Stored overrides** become current authoritative staff marks, with no
+  data rewrite.
+- **Generated exam formulas** keep the old form. Double marking a generated
+  component needs a `marking` block, and the generator doesn't emit one.
+- **A formula edit doesn't re-score.** A change to `required` or `combine`
+  reaches a delivery at its next grade, rescore or mark.
+- **Marks belong to a delivery,** as picks do.
+
+#### Implementation
+
+Core:
+
+- stores marks in an append-only ledger (`evaluation.question_score_override`,
+  migration 000056);
+- resolves them in the formula evaluation (`internal/pipeline`);
+- serves them through `/deliveries/{id}/components/{component}/marks` and
+  `/deliveries/{id}/marks`, with blind marking on the grading roster
+  (`internal/api/report`).
+
+Not yet built:
+
+- the console's marking interface (zinc-sig/ui);
+- the AI judge that writes suggestions.
+
+#### Alternatives considered
+
+- **Keep suggestions in a separate table, promoted to an override when
+  confirmed.** That is two homes for one concept, a mark. A marker's
+  unconfirmed mark is the same kind of thing as a judge's suggestion.
+- **A provisional score, blocked from release until confirmed.** Release
+  is a timestamp and checks nothing about grading. A gate would need
+  release to read scoring state, and scores written after release would
+  still be visible. With a reference standing, unconfirmed marks never
+  reach a score.
+- **Record when a component's marks are revealed,** so they stay visible
+  after a withdrawal. It is extra state, kept in step with the marks, for a
+  case where the marks have already been seen.
+- **Allow only staff to write authoritative marks.** Each write path offers
+  the standings it allows. The judge's offers reference and counted.
+- **Require counted level marks to agree,** pending moderation otherwise.
+  Combining works on points, so `mean` and `max` apply to levels as to
+  numbers. A rule that marks must agree can be added as another `combine`
+  value.
