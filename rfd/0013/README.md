@@ -1851,10 +1851,20 @@ level's points. Without levels, a mark is a number.
   - `1` or more turns marking on. The component is pending until that many
     markers have marked it.
 - **`combine`** is how the inputs that count combine once enough markers
-  have marked: `mean`, the default, takes their mean, and `max` the
-  highest. The inputs that count are the counting automatic input, when
-  the component has one, and every counted mark. `combine` applies only
-  when `markers` is 1 or more.
+  have marked. The inputs that count are the counting automatic input,
+  when the component has one, and every counted mark. `combine` applies
+  only when `markers` is 1 or more.
+  - `mean`, the default, takes their mean.
+  - `median` takes the middle value by points, or with an even count the
+    mean of the two middle values. Once there are three or more inputs, how
+    far one input lies from the others does not change the result.
+  - `max` takes the highest.
+  - `min` takes the lowest.
+
+  On equal points under `max`, `min` and `median`, a level ranks above a
+  number, and an earlier-declared level above a later one. `max` and `min`
+  take the input that ranks above, and `median`, among the inputs that hold
+  the median value, takes the one that ranks above.
 
 **Resolution.** Each component resolves in this order:
 
@@ -1903,8 +1913,11 @@ Other rules:
   - the authoritative level;
   - under `mean`, the level every input names, when they all name the same
     one. An `auto_level` alone under `markers = 0` is this case;
-  - under `max`, the level of the winning input. On a tie, a level beats a
-    number, and an earlier-declared level beats a later one.
+  - under `max` and `min`, the level of the deciding input. On a tie, a
+    level beats a number, and an earlier-declared level beats a later one;
+  - under `median`, when the median is a value inputs hold, the level of
+    the input of that value that ranks above the others, wherever the other
+    inputs fall; when an even count's two middle values differ, none.
 
 **Validate phase.**
 
@@ -2035,9 +2048,11 @@ Not yet built:
 - **Allow only staff to write authoritative marks.** Each write path offers
   the standings it allows. The judge's offers reference and counted.
 - **Require counted level marks to agree,** pending moderation otherwise.
-  Combining works on points, so `mean` and `max` apply to levels as to
-  numbers. A rule that marks must agree can be added as another `combine`
-  value.
+  Combining works on points, so every `combine` rule applies to levels as
+  to numbers. A rule that marks must agree can be added as another
+  `combine` value.
+- **`agree` with a tolerance,** under which marks that differ by more than
+  the tolerance wait for a moderator, is a later design.
 - **A `replace` rule that falls back to the automatic input.** The first
   form of this entry made it the default: the mean of the counted marks,
   or the automatic input while there are none. It treats the pipeline as a
