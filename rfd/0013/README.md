@@ -1739,7 +1739,8 @@ the marks routes are implemented in core by
 [#778](https://github.com/zinc-sig/core/pull/778) and
 [#779](https://github.com/zinc-sig/core/pull/779). The marking rule this
 entry describes, with `markers` and suggestions, replaces the rule #778
-implements, and is in a later core pull request.
+implements, and is in
+[zinc-sig/core#791](https://github.com/zinc-sig/core/pull/791).
 
 Affects [Component block](#component-block), [Validate
 phase](#validate-phase-schema-only), [Runtime evaluation
