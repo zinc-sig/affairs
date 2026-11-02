@@ -667,6 +667,10 @@ modality-wide `component "<modality>"` summing marks; it emits a
 `max_score = component.value.marks` and
 `score = try(manual[id], succeeded(pipeline.<modality>.scenarios[id].test) ? component.value.marks : 0)`.
 
+Amended: see Amendments, 2026-11-02. The score is written without the
+`try(manual[...], ...)` wrapper, and each generated component carries a
+`marking {}` block.
+
 `marking.diff_flags` is the generator's translation of the SA
 `match_options` blob (mapping in [SA match options](#sa-match-options));
 `marking.expected_file` is the materialized expected-answer path (see
@@ -682,6 +686,9 @@ implications of manual essay grading. (Amended: see Amendments,
 2026-08-12 A. Essays are emitted as a manual-only `component "<qid>"`
 (score = `try(manual[qid], 0)`, no pipeline block), and the default
 `max_score` no longer filters essays out.)
+
+Amended: see Amendments, 2026-11-02. An essay component has no score and a
+`marking {}` block, so it takes its marks directly.
 
 ### Full assembled-config shape
 
@@ -1550,3 +1557,56 @@ serves it. The selection reaches an examination's stored config at its
 paper's next materializing save, such as a question publish or a
 marking-scheme save, or through the manual materialization endpoint. Nothing
 backfills, so a paper keeps the whole-delivery mirror until then.
+
+### 2026-11-02: every generated component declares a marking block
+
+Affects [Per-modality emission](#per-modality-emission), the fragment
+rules of [The fragment shape](#the-fragment-shape), and the 2026-08-12
+entry above, which describes the `try(manual[...], ...)` wrapper this entry
+removes. RFD 0013's 2026-10-30 amendment, "Marks of several standings",
+defines the component `marking` block and how marks resolve; this entry
+records what the generator emits, shipped in core by
+[zinc-sig/core#786](https://github.com/zinc-sig/core/pull/786) and in the
+console by [zinc-sig/ui#763](https://github.com/zinc-sig/ui/pull/763).
+Where it and the body disagree, this entry governs.
+
+- **Every generated component carries `marking {}`**, the default rule:
+  an authoritative mark wins, the counted marks replace the score by their
+  mean, and the score stands while there are none (`markingBlock`, core
+  `internal/pipeline/configgen/emit.go`). Objective components keep their
+  score without the wrapper. An essay component has no score: with levels
+  it is scored by the level staff pick, without them by the mark staff
+  enter. Each coding component keeps its author's score as written and
+  gains the block.
+- **Why the block, and why on every component.** A component with a score
+  and neither levels nor a `marking` block is written the old way, and its
+  marks reach it only through `manual`. Dropping the wrapper without
+  adding the block would have ignored every mark. The block goes on every
+  component, scoreless essays included, so each declares the rule it
+  applies, and a per-question rule fills the same block.
+- **Evaluated scores do not change.** The rule gives the results the
+  wrapper gave, including the integrity zero that only an authoritative
+  mark lifts. Three things differ. A breakdown row records its inputs,
+  rule, and required count, which students do not see. A component with
+  an integrity flag and an authoritative mark reports `manual_only` false
+  rather than true, because the new shape computes it from the formula
+  alone. And the marks route refuses a number outside `[0, max_score]` on
+  a generated component, as it does on any component with a `marking`
+  block, where before it stored the number and the evaluation clamped it;
+  the override routes still store it.
+- **Coding fragments do not read `manual` or declare `marking`.** The
+  fragment rule `fragment-score-manual-guard`, which warned when a score
+  did not begin with the wrapper, is replaced by `fragment-score-no-manual`,
+  which refuses a component score that reads `manual`. A new rule,
+  `fragment-generator-owned-marking`, refuses a `marking` block in a
+  component, because the generator writes it, as it writes `covers` and
+  `title`. The save-time check, the lint, and the generator all run both. A fragment stored the old way stops
+  materializing, and the last applied config keeps serving, until its
+  author updates it. The console's coding editor removes the wrapper when
+  it opens such a fragment, says so, and the author's save stores the new
+  text.
+
+The shape reaches an examination's stored formula at its paper's next
+materializing save, or through the manual materialization endpoint.
+Nothing backfills: a stored formula keeps the wrapper, which the formula
+language still supports, until then.
