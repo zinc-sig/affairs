@@ -198,6 +198,10 @@ Fields marked `?` are optional. (Amended: see Amendments, 2026-09-08. An
 `msq` row belongs in this table; that entry gives the `msq` blob and its
 `MultiSelectInfo` answer-modality schema.)
 
+Amended: see Amendments, 2026-11-02, "an essay or coding question sets its
+marking rule". The essay and coding blobs also take an optional
+`"marking": { "required": 2, "combine": "mean" }`.
+
 **`marks` always per-question total.** Coding questions do not carry
 per-test-case marks; differentiated per-case marks live in the authored
 fragment (typically `locals { case_marks = {...} }` in the component's
@@ -1610,3 +1614,40 @@ The shape reaches an examination's stored formula at its paper's next
 materializing save, or through the manual materialization endpoint.
 Nothing backfills: a stored formula keeps the wrapper, which the formula
 language still supports, until then.
+
+### 2026-11-02: an essay or coding question sets its marking rule
+
+Affects [Marking-scheme schema](#marking-scheme-schema), [Per-modality
+emission](#per-modality-emission), and the entry above, whose generated
+`marking {}` block this rule fills. Shipped in core by
+[zinc-sig/core#788](https://github.com/zinc-sig/core/pull/788) and in the
+console by [zinc-sig/ui#764](https://github.com/zinc-sig/ui/pull/764).
+Where it and the body disagree, this entry governs.
+
+- **Blob.** The essay and coding blobs gain an optional
+  `marking: {required, combine}` (`MarkingRule`, core
+  `internal/api/examination/marking_scheme_types.go`). `required` is how
+  many counted marks a component needs before it is scored, and `combine`
+  is `replace`, `max`, or `mean`, as RFD 0013's "Marks of several
+  standings" amendment defines them. An absent rule, or a zero field, is the
+  formula's default, 0 and `replace`. Objective blobs carry no rule; the
+  strict decode refuses one. Save-time validation refuses a negative
+  count and an unknown combine.
+- **Emission.** The generator writes the rule into the `marking` block of
+  each of the question's components, every knob of a coding question alike
+  (`markingBlock`, `configgen/emit.go`); with no rule the block stays
+  `marking {}`, so a paper without rules generates what it did. A coding
+  fragment still may not declare its own block, so the rule has one
+  source.
+- **Why a field in the scheme.** A paper's formula is managed by its
+  document and refuses direct edits, so before this field nothing could
+  set `required` on a generated component, and double marking an essay
+  needed a database edit.
+- **Raising `required` after marking has started** leaves a scored
+  delivery without a score at its next re-score until it has enough
+  counted marks, and the blind filter then hides the other markers'
+  counted marks from each marker.
+
+The answer-key projection names each field it publishes, so the rule is
+not shown to students. A rule edit saves a new marking-scheme version, so
+it reaches the stored formula at that save.
