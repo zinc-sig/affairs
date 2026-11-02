@@ -200,7 +200,7 @@ Fields marked `?` are optional. (Amended: see Amendments, 2026-09-08. An
 
 Amended: see Amendments, 2026-11-02, "an essay or coding question sets its
 marking rule". The essay and coding blobs also take an optional
-`"marking": { "required": 2, "combine": "mean" }`.
+`"marking": { "markers": 2, "combine": "max" }`.
 
 **`marks` always per-question total.** Coding questions do not carry
 per-test-case marks; differentiated per-case marks live in the authored
@@ -458,6 +458,10 @@ which can be mechanically derived from question metadata. Putting the
 component in the fragment keeps the per-question grading definition in
 one place, in one editor.
 
+Amended: see Amendments, 2026-11-02, "every generated component declares
+a marking block". A component declares exactly one of `score` and
+`suggested_score`, and no `marking` block, which the generator writes.
+
 The fragment **does not** include the `pipeline "<qid>" {}` declaration
 block that the formula file requires to ground the `pipeline.<qid>`
 namespace (per RFD 0013). That declaration is auto-emitted by the
@@ -673,7 +677,7 @@ modality-wide `component "<modality>"` summing marks; it emits a
 
 Amended: see Amendments, 2026-11-02. The score is written without the
 `try(manual[...], ...)` wrapper, and each generated component carries a
-`marking {}` block.
+`marking { markers = 0 }` block.
 
 `marking.diff_flags` is the generator's translation of the SA
 `match_options` blob (mapping in [SA match options](#sa-match-options));
@@ -692,7 +696,8 @@ implications of manual essay grading. (Amended: see Amendments,
 `max_score` no longer filters essays out.)
 
 Amended: see Amendments, 2026-11-02. An essay component has no score and a
-`marking {}` block, so it takes its marks directly.
+`marking` block whose `markers` is the question's count, 1 by default, so
+its markers' marks score it.
 
 ### Full assembled-config shape
 
@@ -1568,85 +1573,132 @@ Affects [Per-modality emission](#per-modality-emission), the fragment
 rules of [The fragment shape](#the-fragment-shape), and the 2026-08-12
 entry above, which describes the `try(manual[...], ...)` wrapper this entry
 removes. RFD 0013's 2026-10-30 amendment, "Marks of several standings",
-defines the component `marking` block and how marks resolve; this entry
-records what the generator emits, shipped in core by
+defines the component `marking` block, the automatic inputs, and how marks
+resolve; this entry records what the generator emits, shipped in core by
 [zinc-sig/core#786](https://github.com/zinc-sig/core/pull/786) and in the
-console by [zinc-sig/ui#763](https://github.com/zinc-sig/ui/pull/763).
+console by [zinc-sig/ui#763](https://github.com/zinc-sig/ui/pull/763),
+with the rule change in
+[zinc-sig/core#791](https://github.com/zinc-sig/core/pull/791).
 Where it and the body disagree, this entry governs.
 
-- **Every generated component carries `marking {}`**, the default rule:
-  an authoritative mark wins, the counted marks replace the score by their
-  mean, and the score stands while there are none (`markingBlock`, core
-  `internal/pipeline/configgen/emit.go`). Objective components keep their
-  score without the wrapper. An essay component has no score: with levels
-  it is scored by the level staff pick, without them by the mark staff
-  enter. Each coding component keeps its author's score as written and
-  gains the block.
+- **Every generated component carries a `marking` block that states
+  `markers`** (`markingBlock`, core
+  `internal/pipeline/configgen/emit.go`):
+  - an objective component, `markers = 0`: its test grades it, and only an
+    authoritative mark overrides it. It keeps its score without the
+    wrapper.
+  - an essay component, the question's count, 1 when its rule sets none.
+    An essay has no score, so it is pending until that many markers have
+    marked it, with or without levels, and its counted marks then combine
+    by the question's rule. An authoritative mark, such as a level staff
+    pick, grades it at any time.
+  - every knob of a coding question, the question's count, 0 when its rule
+    sets none. Each knob keeps its author's `score` or `suggested_score`
+    as written, under the same attribute.
+
+  `combine` is written only when it is not `mean`, and only beside
+  `markers` of 1 or more, since under 0 it never applies.
 - **Why the block, and why on every component.** A component with a score
   and neither levels nor a `marking` block is written the old way, and its
   marks reach it only through `manual`. Dropping the wrapper without
   adding the block would have ignored every mark. The block goes on every
-  component, scoreless essays included, so each declares the rule it
-  applies, and a per-question rule fills the same block.
-- **Evaluated scores do not change.** The rule gives the results the
-  wrapper gave, including the integrity zero that only an authoritative
-  mark lifts. Three things differ. A breakdown row records its inputs,
-  rule, and required count, which students do not see. A component with
-  an integrity flag and an authoritative mark reports `manual_only` false
-  rather than true, because the new shape computes it from the formula
-  alone. And the marks route refuses a number outside `[0, max_score]` on
-  a generated component, as it does on any component with a `marking`
-  block, where before it stored the number and the evaluation clamped it;
-  the override routes still store it.
-- **Coding fragments do not read `manual` or declare `marking`.** The
-  fragment rule `fragment-score-manual-guard`, which warned when a score
-  did not begin with the wrapper, is replaced by `fragment-score-no-manual`,
-  which refuses a component score that reads `manual`. A new rule,
-  `fragment-generator-owned-marking`, refuses a `marking` block in a
-  component, because the generator writes it, as it writes `covers` and
-  `title`. The save-time check, the lint, and the generator all run both. A fragment stored the old way stops
-  materializing, and the last applied config keeps serving, until its
-  author updates it. The console's coding editor removes the wrapper when
-  it opens such a fragment, says so, and the author's save stores the new
-  text.
+  component, scoreless essays included, so each states whether markers
+  mark it, and a per-question rule fills the same block.
+- **Evaluated scores do not change** where the tests or an authoritative
+  mark decide. The rule gives the results the wrapper gave there,
+  including the integrity zero that only an authoritative mark lifts, and
+  an unmarked essay is pending as before. Four things differ:
+  - A breakdown row records its inputs, rule, and `markers`, which
+    students do not see.
+  - A component with an integrity flag and an authoritative mark reports
+    `manual_only` false rather than true, because the new shape computes
+    it from the formula alone.
+  - The marks route refuses a number outside `[0, max_score]` on a
+    generated component, as it does on any component with a `marking`
+    block, where before it stored the number and the evaluation clamped
+    it; the override routes still store it.
+  - A counted or reference mark reaches only a component with markers.
+    The marks route refuses one on an objective component, and on a coding
+    component whose rule sets no markers, with `report.marking_off`, where
+    the wrapper read the counted marks through `manual`.
+- **Coding fragments do not read `manual` or declare `marking`, and each
+  component declares one input.** The fragment rule
+  `fragment-score-manual-guard`, which warned when a score did not begin
+  with the wrapper, is replaced by `fragment-score-no-manual`, which
+  refuses a component `score` or `suggested_score` that reads `manual`. A
+  new rule, `fragment-generator-owned-marking`, refuses a `marking` block
+  in a component, because the generator writes it, as it writes `covers`
+  and `title`. A third, `fragment-component-input`, requires each
+  component to declare exactly one of `score`, which counts, and
+  `suggested_score`, which markers see and which never counts; a fragment
+  declares no levels, so it has no level input. The save-time check, the
+  lint, and the generator all run these rules. A fragment stored the old
+  way stops materializing, and the last applied config keeps serving,
+  until its author updates it. The console's coding editor removes the
+  wrapper when it opens such a fragment, says so, and the author's save
+  stores the new text.
 
 The shape reaches an examination's stored formula at its paper's next
 materializing save, or through the manual materialization endpoint.
 Nothing backfills: a stored formula keeps the wrapper, which the formula
-language still supports, until then.
+language still supports, until then. A stored essay with levels and no
+`marking` block also keeps its shape until then. RFD 0013's amendment
+defines that shape as taking no marking, so the marks route refuses
+counted marks on it, and only an authoritative level pick grades it.
 
 ### 2026-11-02: an essay or coding question sets its marking rule
 
 Affects [Marking-scheme schema](#marking-scheme-schema), [Per-modality
 emission](#per-modality-emission), and the entry above, whose generated
-`marking {}` block this rule fills. Shipped in core by
+`marking` block this rule fills. Shipped in core by
 [zinc-sig/core#788](https://github.com/zinc-sig/core/pull/788) and in the
-console by [zinc-sig/ui#764](https://github.com/zinc-sig/ui/pull/764).
+console by [zinc-sig/ui#764](https://github.com/zinc-sig/ui/pull/764),
+with the rule change in
+[zinc-sig/core#791](https://github.com/zinc-sig/core/pull/791).
 Where it and the body disagree, this entry governs.
 
 - **Blob.** The essay and coding blobs gain an optional
-  `marking: {required, combine}` (`MarkingRule`, core
-  `internal/api/examination/marking_scheme_types.go`). `required` is how
-  many counted marks a component needs before it is scored, and `combine`
-  is `replace`, `max`, or `mean`, as RFD 0013's "Marks of several
-  standings" amendment defines them. An absent rule, or a zero field, is the
-  formula's default, 0 and `replace`. Objective blobs carry no rule; the
-  strict decode refuses one. Save-time validation refuses a negative
-  count and an unknown combine.
+  `marking: {markers?, combine?}` (`MarkingRule`, core
+  `internal/api/examination/marking_scheme_types.go`). `markers` is how
+  many markers mark each of the question's components before it scores,
+  and `combine` is `mean`, the default, or `max`, as RFD 0013's "Marks of
+  several standings" amendment defines them.
+  - An essay takes 1 when `markers` is absent, and needs 1 or more.
+    Save-time validation refuses a smaller count ("an essay needs at least
+    one marker").
+  - A coding question takes 0 when `markers` is absent, which means no
+    marking: its tests grade it, and only an authoritative mark overrides
+    them. A count must be 0 or more.
+  - A coding question one of whose knobs declares `suggested_score` needs
+    1 or more markers, since a suggestion reaches the score only through a
+    marker's mark. Save-time validation checks the rule against the
+    fragment it already parses, and refuses the save ("a coding question
+    whose parts suggest a score needs at least one marker"). The fragment
+    lint knows no rule, so it does not report this.
+  - Objective blobs carry no rule; the strict decode refuses one.
+    Save-time validation also refuses an unknown combine.
+  - An essay scheme without a `marking` field stays valid, and generates
+    `markers = 1`.
 - **Emission.** The generator writes the rule into the `marking` block of
   each of the question's components, every knob of a coding question alike
-  (`markingBlock`, `configgen/emit.go`); with no rule the block stays
-  `marking {}`, so a paper without rules generates what it did. A coding
-  fragment still may not declare its own block, so the rule has one
-  source.
+  (`markingBlock`, `configgen/emit.go`). It always writes `markers`, the
+  question type's default when the rule sets none, and writes `combine`
+  only when it is not `mean` and `markers` is 1 or more. A paper without
+  rules generates `markers = 1` on each essay and `markers = 0` on each
+  coding knob. A coding fragment still may not declare its own block, so
+  the rule has one source.
 - **Why a field in the scheme.** A paper's formula is managed by its
   document and refuses direct edits, so before this field nothing could
-  set `required` on a generated component, and double marking an essay
+  set `markers` on a generated component, and double marking an essay
   needed a database edit.
-- **Raising `required` after marking has started** leaves a scored
-  delivery without a score at its next re-score until it has enough
-  counted marks, and the blind filter then hides the other markers'
-  counted marks from each marker.
+- **Markers on a coding question.** With `markers` of 1 or more, a knob
+  with a `score` reads it once the markers have marked, so a delivery
+  stays ungraded until its tests have run, however many markers have
+  marked it. A knob with a `suggested_score` does not wait for the tests.
+- **Raising `markers` after marking has started** leaves a scored
+  delivery without a score at its next re-score until enough markers have
+  marked it, and the blind filter then hides the other markers' counted
+  marks from each marker.
 
 The answer-key projection names each field it publishes, so the rule is
 not shown to students. A rule edit saves a new marking-scheme version, so
