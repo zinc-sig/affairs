@@ -1661,7 +1661,9 @@ Where it and the body disagree, this entry governs.
   `marking: {markers?, combine?}` (`MarkingRule`, core
   `internal/api/examination/marking_scheme_types.go`). `markers` is how
   many markers mark each of the question's components before it scores,
-  and `combine` is `mean`, the default, or `max`, as RFD 0013's "Marks of
+  and `combine` is how the inputs that count combine: `mean`, the default,
+  takes their mean; `median` the middle one, or the mean of the two middle
+  ones; `max` the highest; and `min` the lowest, as RFD 0013's "Marks of
   several standings" amendment defines them.
   - An essay takes 1 when `markers` is absent, and needs 1 or more.
     Save-time validation refuses a smaller count ("an essay needs at least
