@@ -189,7 +189,8 @@ pipeline "q5" {
   stage "load" {
     exec {
       command = "psql"
-      args    = ["postgresql://${service.database.user}:${service.database.password}@${service.database.host}:${service.database.port}/${service.database.name}"]
+      args    = ["--host=${service.database.host}", "--port=${service.database.port}", "--username=${service.database.user}", "--dbname=${service.database.name}"]
+      env     = { PGPASSWORD = service.database.password }
       scenario "sample" { stdin_path = "shop.sql" }
       scenario "case-2" { stdin_path = "examination-assets/q5/shop-2.sql" }
     }
@@ -198,7 +199,8 @@ pipeline "q5" {
   stage "run" {
     exec {
       command    = "psql"
-      args       = ["postgresql://${service.database.user}:${service.database.password}@${service.database.host}:${service.database.port}/${service.database.name}"]
+      args       = ["--host=${service.database.host}", "--port=${service.database.port}", "--username=${service.database.user}", "--dbname=${service.database.name}"]
+      env        = { PGPASSWORD = service.database.password }
       stdin_path = "answer.sql"
       scenario "sample" { stdout_path = "sample.out" }
       scenario "case-2" { stdout_path = "case-2.out" }
@@ -222,16 +224,22 @@ for any hidden test.
 
 The presets for the four clients, where `d` stands for `service.database`:
 
-| Engine | Command | Arguments |
-|---|---|---|
-| PostgreSQL | `psql` | `["postgresql://${d.user}:${d.password}@${d.host}:${d.port}/${d.name}"]` |
-| MySQL | `mysql` | `["--host=${d.host}", "--port=${d.port}", "--user=${d.user}", d.name]`, with `env = { MYSQL_PWD = d.password }` |
-| SQL Server | `sqlcmd` | `["-C", "-S", "${d.host},${d.port}", "-U", d.user, "-P", d.password, "-d", d.name]` |
-| Oracle | `sqlplus` | `["-S", "-L", "${d.user}/${d.password}@//${d.host}:${d.port}/${d.name}"]` |
+| Engine | Command | Arguments | Environment |
+|---|---|---|---|
+| PostgreSQL | `psql` | `["--host=${d.host}", "--port=${d.port}", "--username=${d.user}", "--dbname=${d.name}"]` | `{ PGPASSWORD = d.password }` |
+| MySQL | `mysql` | `["--host=${d.host}", "--port=${d.port}", "--user=${d.user}", d.name]` | `{ MYSQL_PWD = d.password }` |
+| SQL Server | `sqlcmd` | `["-C", "-S", "${d.host},${d.port}", "-U", d.user, "-d", d.name]` | `{ SQLCMDPASSWORD = d.password }` |
+| Oracle | `sqlplus` | `["-S", "-L", "${d.user}/${d.password}@//${d.host}:${d.port}/${d.name}"]` | none |
 
 Each of these forms was run from a locked-down run container against a
 server in a second container, with the data and then the answer on standard
 input.
+
+The presets pass the password through the client's own variable where it
+reads one. A result shows the command and its arguments and not its
+environment, so the password does not show on the result screen. `sqlplus`
+reads no such variable, so on Oracle the password is in the logon argument
+and shows. Results are not masked.
 
 ## The `service` block
 
@@ -279,8 +287,9 @@ five strings:
   the `for_each` and `labels` of a `dynamic` block.
 - **`env` becomes a deferred expression**, as `args` is. The merge rule
   does not change: the exec's variables first, the scenario's laid over
-  them. The MySQL preset needs it, because the client prints a warning on
-  every command when the password is in its arguments.
+  them. The presets need it to pass the password through the client's own
+  variable. On MySQL the client also prints a warning on every command when
+  the password is in its arguments.
 - **There is no ready-made connection string.** One string per client
   beside the five parts it is made of would be two ways to say one thing.
 
@@ -350,7 +359,9 @@ database it also holds what the core needs to run the engine:
 - **Start.** The command, the user, the settings the base image's
   entrypoint requires, and the engine's own start settings. MySQL starts
   without its binary log, because with it a test case's account may not
-  create functions or triggers.
+  create functions or triggers. PostgreSQL starts with password
+  authentication for host connections, because the stock image trusts
+  loopback and the run container reaches the server over loopback.
 - **Limits.** Port, memory, task limit, data volume size.
 - **Operations.** The statements for ready, make a scenario's account and
   database, reset, and fingerprint.
@@ -383,6 +394,10 @@ first run, as a missing interpreter is today.
   sandbox's posture.
 - **Administrator access** stays in the database container. The core uses
   it through exec. No command of a pipeline holds it.
+- **Every login over the network needs a password.** The image is the
+  instructor's, so the platform does not rely on the start settings alone:
+  when a server starts it checks, from the run container's side, that a
+  login without a password is refused, and fails the start otherwise.
 - **In a graded run** the run container has a network, because the agent
   needs Temporal and object storage, and the database container shares it.
   The server listens on loopback only, so another run's container cannot
@@ -410,7 +425,7 @@ time.
   procedures, functions, triggers, sequences) and nothing outside it. It
   cannot create a database, read another scenario's, or ask the server to
   read a file. On PostgreSQL this needs `CONNECT` revoked from `PUBLIC` on
-  each database.
+  each database, and password authentication for host connections.
 - **The unit is the scenario** because a `load` stage has to feed `run`,
   which rules out a database per command, and because two test cases load
   different rows into the same table names, which rules out one per run.
@@ -495,10 +510,18 @@ removed with it.
 - **What protects the database is reachability.** Only the run's own
   containers share the namespace. A Run has no route anywhere, and in a
   graded run the server listens on loopback only.
-- **A scenario's password is not a secret.** The student's own SQL runs as
-  that account. Resolved arguments are stored with every result, and a
-  result shows students its command and arguments unless the stage hides its
-  metadata, so the password is on screen.
+- **Every login needs a password.** The run container reaches the server
+  over loopback, and the stock PostgreSQL image trusts loopback. Without a
+  start setting, a command in the run container logged in as the
+  administrator with no password, and read another scenario's data.
+  PostgreSQL is therefore started with password authentication for host
+  connections, and the platform checks at every server start that a login
+  without a password is refused. MySQL and SQL Server refuse it as shipped.
+- **A scenario's password is not a secret from the student**, whose own SQL
+  runs as that account. Resolved arguments are stored with every result and
+  shown unless the stage hides its metadata; the environment is not. The
+  presets pass the password through `env`, so it does not show. On Oracle it
+  is in the arguments and shows.
 - **The administrator never enters the run container.** Its credentials are
   made per server start and used by the core through exec.
 - **A client's own commands** (`\!` in `psql`, `system` in `mysql`) run in
@@ -538,7 +561,14 @@ Measured:
 - All four engines as a second container in the run container's namespace.
 - The four stock clients with the connection in their arguments.
 - Reset, fingerprint and replacement on all four.
-- One account refused another's data on all four.
+- One account refused another's data under its own name on all four.
+- A login without a password from the run container: refused on MySQL and
+  SQL Server as shipped; allowed on the stock PostgreSQL image, as the
+  administrator and as any account; refused on PostgreSQL once it is started
+  with password authentication for host connections, with the platform's
+  access through the socket still working.
+- The password in the client's own variable on PostgreSQL, MySQL and SQL
+  Server.
 - A builder-saved image in both roles, first-start scripts, the template,
   settings and bulk loading, on PostgreSQL and MySQL.
 - A reference resolved per scenario in the parser: a prototype bound a
@@ -551,6 +581,8 @@ Not measured:
 - Kubernetes: the second container of an executor pod, and a native sidecar
   in a grading Job.
 - Each engine listening on loopback only.
+- A login without a password on Oracle, and on images saved from the
+  builder.
 - SQL Server Express, Oracle's own image, a smaller Oracle SGA.
 - The smallest capability set for SQL Server.
 - What an instructor's image can prepare on SQL Server and Oracle. The SQL
@@ -578,32 +610,28 @@ Not measured:
 
 ## Open questions
 
-1. A scenario's password shows on the result screen. Is that acceptable as
-   it is, or should results mask it?
-2. Are the accounts' values new for each run, or fixed for a given config?
+1. Are the accounts' values new for each run, or fixed for a given config?
    New values keep anyone from typing them as literals. Fixed values keep a
-   parse reproducible.
-3. Should a stage with no scenario that reads the service get a warning at
+   parse reproducible. The parse derives them from a secret in the binding,
+   so either is the caller's choice.
+2. Should a stage with no scenario that reads the service get a warning at
    save, since it reads the database of `default`, which no test case
    shares?
-4. The save check between the block and the language reads a version of
+3. The save check between the block and the language reads a version of
    the answer options. Is it the draft or the published one?
-5. May Oracle Database Free be used for exams under its terms? Oracle's
-   pages confirm its limits, not this use. SQL Server Developer is licensed
-   for non-production use only, so the proposal is Express.
-6. If T-SQL or PL/SQL gets no trustworthy parser, does the language ship
+4. If T-SQL or PL/SQL gets no trustworthy parser, does the language ship
    without linting, and does the gate that holds registry languages against
    the linter's manifest change?
-7. How many jobs and what age may a warm server reach before it is
+5. How many jobs and what age may a warm server reach before it is
    replaced?
-8. A paper's pool holds five executors by default. Is that right when each
+6. A paper's pool holds five executors by default. Is that right when each
    carries a database container of 1.5 GB (SQL Server) or 2.5 GB (Oracle)?
-9. Does the registry state which versions of an engine its statements are
+7. Does the registry state which versions of an engine its statements are
    tested against?
-10. The sandbox sets two Python variables for a Run that the pipeline does
-    not write. They are the one existing case of a setting the pipeline
-    does not show, and they make a Run differ from a graded run. Are they
-    in scope to remove?
+8. The sandbox sets two Python variables for a Run that the pipeline does
+   not write. They are the one existing case of a setting the pipeline
+   does not show, and they make a Run differ from a graded run. Are they
+   in scope to remove?
 
 ## Decision status
 
@@ -618,7 +646,10 @@ Not measured:
 | Data is a test case's input; shared preparation by a first-start script | decided |
 | Expected output compared with `diff`; no reference query | decided |
 | A warm server is reused only after a verified reset; replaced on any difference | decided |
+| The presets pass the password through `env` where the client reads one; results are not masked | decided |
+| Oracle Database Free, the edition courses already use | decided |
 | `env` as a deferred expression | proposed |
+| PostgreSQL started with password authentication for host connections; a login without a password checked at every server start | proposed |
 | The parse phase assigns the accounts; the resolved pipeline carries them | proposed |
 | MySQL started without its binary log | proposed |
 | Scheduled replacement by job count and age | proposed |
@@ -626,7 +657,7 @@ Not measured:
 | Database container posture, per engine | proposed |
 | A native sidecar in a grading Job | proposed |
 | Language ids `mssql` and `oracle`; no generic `sql` | proposed |
-| SQL Server Express and Oracle Database Free | proposed |
+| SQL Server Express, because Developer is licensed for non-production use only | proposed |
 
 ## Implementation
 
