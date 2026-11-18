@@ -1,7 +1,7 @@
 ---
 authors: hoifanrd
 state: discussion
-discussion:
+discussion: "[#31](https://github.com/zinc-sig/affairs/pull/31)"
 labels: direction, infrastructure, ux
 ---
 
